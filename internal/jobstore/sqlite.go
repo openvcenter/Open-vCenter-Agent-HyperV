@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at    TEXT NOT NULL,
     started_at    TEXT,
     completed_at  TEXT,
-    error_message TEXT NOT NULL DEFAULT ''
+    error_message TEXT NOT NULL DEFAULT '',
+    timeout_seconds INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_vm ON jobs(vm_identifier);
@@ -55,6 +56,16 @@ func Open(dbPath string) (Store, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize job store schema: %w", err)
+	}
+	// Columns added after the table was first created. Another process may add
+	// one concurrently, so "duplicate column" is fine.
+	for _, alter := range []string{
+		`ALTER TABLE jobs ADD COLUMN timeout_seconds INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("migrate job store schema: %w", err)
+		}
 	}
 
 	return &sqliteStore{db: db}, nil
@@ -104,11 +115,11 @@ func (s *sqliteStore) Create(job *JobRecord) error {
 
 	_, err := s.db.Exec(
 		`INSERT INTO jobs
-		    (job_id, task_id, task_type, action, vm_identifier, payload, status, worker_pid, created_at, started_at, completed_at, error_message)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    (job_id, task_id, task_type, action, vm_identifier, payload, status, worker_pid, created_at, started_at, completed_at, error_message, timeout_seconds)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.JobID, job.TaskID, job.TaskType, job.Action, job.VMIdentifier, job.Payload,
 		job.Status, job.WorkerPID, fmtTime(job.CreatedAt),
-		fmtTimePtr(job.StartedAt), fmtTimePtr(job.CompletedAt), job.ErrorMessage,
+		fmtTimePtr(job.StartedAt), fmtTimePtr(job.CompletedAt), job.ErrorMessage, job.TimeoutSeconds,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") || strings.Contains(err.Error(), "PRIMARY KEY") {
@@ -129,7 +140,7 @@ func scanJob(sc interface {
 	)
 	if err := sc.Scan(
 		&rec.JobID, &rec.TaskID, &rec.TaskType, &rec.Action, &rec.VMIdentifier,
-		&payload, &rec.Status, &rec.WorkerPID, &createdAt, &startedAt, &completedAt, &rec.ErrorMessage,
+		&payload, &rec.Status, &rec.WorkerPID, &createdAt, &startedAt, &completedAt, &rec.ErrorMessage, &rec.TimeoutSeconds,
 	); err != nil {
 		return nil, err
 	}
@@ -142,7 +153,7 @@ func scanJob(sc interface {
 	return &rec, nil
 }
 
-const jobColumns = `job_id, task_id, task_type, action, vm_identifier, payload, status, worker_pid, created_at, started_at, completed_at, error_message`
+const jobColumns = `job_id, task_id, task_type, action, vm_identifier, payload, status, worker_pid, created_at, started_at, completed_at, error_message, timeout_seconds`
 
 func (s *sqliteStore) GetByID(jobID string) (*JobRecord, error) {
 	row := s.db.QueryRow(`SELECT `+jobColumns+` FROM jobs WHERE job_id = ?`, jobID)

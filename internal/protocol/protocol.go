@@ -18,6 +18,9 @@ type AgentRequest struct {
 	Params      json.RawMessage `json:"params"`
 	RequestedBy string          `json:"requested_by"`
 	IssuedAt    string          `json:"issued_at"`
+	// TimeoutSeconds is how long the job may run, computed by the backend (disk
+	// work scales it with the disk sizes). 0 = the agent's per-kind default.
+	TimeoutSeconds int `json:"timeout_seconds"`
 }
 
 // AgentResponse is the JSON the agent writes to <hostid>.response.

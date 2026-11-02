@@ -23,6 +23,8 @@ type WorkerEntry struct {
 	Action       string
 	VMIdentifier string
 	Class        JobClass
+	// Timeout is the backend-computed job budget; 0 = the per-kind default.
+	Timeout time.Duration
 }
 
 // Monitor tracks running worker processes, detects termination, and enforces timeouts.
@@ -215,7 +217,7 @@ func (m *Monitor) checkTimeouts() {
 
 	now := time.Now()
 	for _, entry := range m.workers {
-		timeout := m.getTimeoutForTask(entry.TaskType, entry.Action)
+		timeout := m.timeoutFor(entry)
 		if now.Sub(entry.StartedAt) > timeout {
 			m.logger.Warn("killing worker due to timeout",
 				"job_id", entry.JobID,
@@ -237,7 +239,8 @@ func (m *Monitor) checkTimeouts() {
 	}
 }
 
-// Per-task-type timeout overrides.
+// Per-task-type timeout overrides, used when the request carries no
+// timeout_seconds (the backend computes it, see ovc-backend app/task_timeouts.py).
 var taskTimeouts = map[string]time.Duration{
 	"vm_clone": 1800 * time.Second,
 	"vm_edit":  1800 * time.Second,
@@ -262,6 +265,15 @@ var actionTimeouts = map[string]time.Duration{
 	// A graceful guest-OS shutdown can take several minutes (pending Windows
 	// updates, slow-stopping services). The PS script self-limits below this.
 	"vm_shutdown": 600 * time.Second,
+}
+
+// timeoutFor returns the worker's kill timeout: the backend-computed budget when
+// the request carried one, else the per-kind default.
+func (m *Monitor) timeoutFor(entry *WorkerEntry) time.Duration {
+	if entry.Timeout > 0 {
+		return entry.Timeout
+	}
+	return m.getTimeoutForTask(entry.TaskType, entry.Action)
 }
 
 // getTimeoutForTask returns the timeout for a given task type and action.

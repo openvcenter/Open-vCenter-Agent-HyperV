@@ -4,10 +4,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"ovc-agent/internal/hyperv"
 )
+
+// createDiskWithProgress creates one VHD and reports its WMI job progress, mapped onto
+// the span [0, phasePercent] of the task's progress bar shared by totalDisks disks.
+func (d *Dispatcher) createDiskWithProgress(ctx context.Context, taskID string, taskType TaskType, path string, sizeBytes int64, fixed bool, index, totalDisks, phasePercent int) error {
+	label := fmt.Sprintf("Creating disk %d/%d: %s", index+1, totalDisks, path)
+	lastReported := -1
+	report := func(diskPct int) {
+		overall := (index*100 + diskPct) * phasePercent / (totalDisks * 100)
+		if overall <= lastReported {
+			return
+		}
+		lastReported = overall
+		d.reportProgress(ctx, taskID, taskType, overall, fmt.Sprintf("%s (%d%%)", label, diskPct))
+	}
+	report(0)
+
+	return hyperv.CreateVHDWithProgress(ctx, path, sizeBytes, fixed, report, func(reason string) {
+		d.logger.Warn("WMI disk creation unavailable, fell back to New-VHD (no progress)",
+			"task_id", taskID, "path", path, "reason", reason)
+	})
+}
 
 // VMEditPayload contains the parameters for editing a VM (all optional except vm_id)
 type VMEditPayload struct {
@@ -355,31 +375,22 @@ if ($vm.Generation -eq 1 -and $vm.State -ne 'Off') {
 
 		totalDisks := len(disks)
 		for i, disk := range disks {
-
-			// Report progress
-			percent := int(float64(i) / float64(totalDisks) * 100)
-			d.reportProgress(ctx, taskID, TaskVMEdit, percent, fmt.Sprintf("Creating disk %d/%d: %s", i+1, totalDisks, disk.Path))
-
-			diskType := "Dynamic"
-			if disk.Type == "Fixed" {
-				diskType = "Fixed"
-			}
-
+			fixed := disk.Type == "Fixed"
 			sizeBytes := int64(disk.SizeGB * 1024 * 1024 * 1024)
 
-			// Use a dedicated context with 10 min timeout per disk (Fixed disks can be very slow)
-			diskCtx, diskCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-
-			script := fmt.Sprintf(`
-$ErrorActionPreference = 'Stop'
-New-VHD -Path "%s" -SizeBytes %d -%s | Out-Null
-Add-VMHardDiskDrive -VMName "%s" -Path "%s"
-`, disk.Path, sizeBytes, diskType, vmName, disk.Path)
-
-			_, err := hyperv.RunPowerShell(diskCtx, script)
-			diskCancel()
+			// ctx is bounded by the task's budget, which the backend scales with the
+			// disk sizes. Progress stays below 100 until the whole edit completes.
+			err := d.createDiskWithProgress(ctx, taskID, TaskVMEdit, disk.Path, sizeBytes, fixed, i, totalDisks, 99)
 			if err != nil {
-				return nil, fmt.Errorf("failed to add disk[%d]: %v", i, err)
+				return nil, fmt.Errorf("failed to add disk[%d]: %s", i, extractPSErrorDetail(err, "VHD_CREATE_FAILED:"))
+			}
+
+			_, err = hyperv.RunPowerShell(ctx, fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
+Add-VMHardDiskDrive -VMName "%s" -Path "%s"
+`, vmName, disk.Path))
+			if err != nil {
+				return nil, fmt.Errorf("failed to attach disk[%d] '%s': %v", i, disk.Path, err)
 			}
 			applied = append(applied, fmt.Sprintf("add_disk=%s", disk.Path))
 		}
@@ -424,9 +435,8 @@ if (%d -le $vhd.Size) { throw "New size must be larger than current size ($([mat
 Resize-VHD -Path "%s" -SizeBytes %d
 `, disk.Path, disk.Path, disk.Path, sizeBytes, disk.Path, disk.Path, sizeBytes)
 
-			diskCtx, diskCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			_, err := hyperv.RunPowerShell(diskCtx, script)
-			diskCancel()
+			// ctx is bounded by the task's budget (expanding a Fixed disk zero-fills the new space)
+			_, err := hyperv.RunPowerShell(ctx, script)
 			if err != nil {
 				return nil, fmt.Errorf("failed to expand disk[%d]: %v", i, err)
 			}

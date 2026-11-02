@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
@@ -48,6 +49,44 @@ func TestCreateAndGet(t *testing.T) {
 	assert.Equal(t, StatusQueued, got.Status)
 	assert.Equal(t, "vm-001", got.VMIdentifier)
 	assert.JSONEq(t, `{"test": true}`, string(got.Payload))
+}
+
+func TestCreateAndGet_TimeoutSeconds(t *testing.T) {
+	store := openTestStore(t)
+
+	job := newTestJob("job-timeout", "vm_create", StatusQueued)
+	job.TimeoutSeconds = 4980
+	require.NoError(t, store.Create(job))
+
+	got, err := store.GetByID("job-timeout")
+	require.NoError(t, err)
+	assert.Equal(t, 4980, got.TimeoutSeconds)
+}
+
+func TestOpen_AddsTimeoutColumnToOldDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "old_jobs.db")
+	db, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE jobs (
+	    job_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, task_type TEXT NOT NULL,
+	    action TEXT NOT NULL DEFAULT '', vm_identifier TEXT NOT NULL DEFAULT '', payload BLOB,
+	    status TEXT NOT NULL, worker_pid INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+	    started_at TEXT, completed_at TEXT, error_message TEXT NOT NULL DEFAULT '')`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO jobs (job_id, task_id, task_type, status, created_at)
+	    VALUES ('old-1', 'task-old-1', 'vm_edit', 'queued', '2026-11-01T00:00:00Z')`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	// Opening twice must not fail on the already-added column.
+	for range 2 {
+		store, err := Open(dbPath)
+		require.NoError(t, err)
+		got, err := store.GetByID("old-1")
+		require.NoError(t, err)
+		assert.Equal(t, 0, got.TimeoutSeconds)
+		require.NoError(t, store.Close())
+	}
 }
 
 func TestCreateDuplicate(t *testing.T) {

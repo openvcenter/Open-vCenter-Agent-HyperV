@@ -225,6 +225,7 @@ func (d *Dispatcher) dispatch(job *jobstore.JobRecord) {
 		Action:       job.Action,
 		VMIdentifier: job.VMIdentifier,
 		Class:        Classify(job),
+		Timeout:      time.Duration(job.TimeoutSeconds) * time.Second,
 	}
 	d.monitor.Register(entry)
 

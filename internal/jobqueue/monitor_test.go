@@ -303,6 +303,14 @@ func TestMonitor_GetTimeoutForTask(t *testing.T) {
 	}
 }
 
+func TestMonitor_TimeoutFor_PrefersBackendBudget(t *testing.T) {
+	m := NewMonitor(newMockStore(), testLogger(), 5*time.Minute, nil)
+
+	assert.Equal(t, 75*time.Minute, m.timeoutFor(&WorkerEntry{TaskType: "vm_create", Timeout: 75 * time.Minute}))
+	assert.Equal(t, 1800*time.Second, m.timeoutFor(&WorkerEntry{TaskType: "vm_create"}))
+	assert.Equal(t, 5*time.Minute, m.timeoutFor(&WorkerEntry{TaskType: "vm_start"}))
+}
+
 func TestMonitor_CheckTimeouts_KillsExpiredWorker(t *testing.T) {
 	store := newMockStore()
 	m := NewMonitor(store, testLogger(), 1*time.Millisecond, nil) // very short default timeout

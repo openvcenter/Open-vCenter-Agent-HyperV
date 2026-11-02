@@ -1516,10 +1516,6 @@ func (d *Dispatcher) handleVMRename(ctx context.Context, taskID string, p VMMana
 		return nil, fmt.Errorf("new_name is required for vm_rename")
 	}
 
-	// Use a dedicated context - rename + move can take a long time for large VMs
-	renameCtx, renameCancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer renameCancel()
-
 	// --- Step 1: Validate VM exists, is Off, and get current path + VHD paths ---
 	d.reportProgress(ctx, taskID, TaskVMManagement, 5, "Validating source VM")
 
@@ -1544,7 +1540,7 @@ try {
 }
 `, p.VMName, p.VMID)
 
-	output, err := hyperv.RunPowerShell(renameCtx, checkScript)
+	output, err := hyperv.RunPowerShell(ctx, checkScript)
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "VM_NOT_FOUND") {
@@ -1590,7 +1586,7 @@ try {
 }
 `, p.VMName, escapePS(details.NewName))
 
-	_, err = hyperv.RunPowerShell(renameCtx, renameScript)
+	_, err = hyperv.RunPowerShell(ctx, renameScript)
 	if err != nil {
 		return nil, fmt.Errorf("failed to rename VM '%s' to '%s': %s", p.VMName, details.NewName, extractPSErrorDetail(err, "VM_RENAME_FAILED:"))
 	}
@@ -1622,7 +1618,7 @@ try {
 }
 `, escapePS(details.NewName), destPath)
 
-	_, err = hyperv.RunPowerShell(renameCtx, moveScript)
+	_, err = hyperv.RunPowerShell(ctx, moveScript)
 	if err != nil {
 		// Cleanup destination directory if it was left empty after failure
 		cleanupEmptyDir(destPath, d.logger)
@@ -1735,12 +1731,8 @@ func (d *Dispatcher) handleVMMove(ctx context.Context, taskID string, p VMManage
 	// the Hyper-V default VM path, or one of the configured (and startup-validated)
 	// aditional_vm_storage roots. When the destination matches a configured additional
 	// root, we use that normalized root so the VM lands under an existing "HyperV" folder.
-	// Use a dedicated context - move can take a long time for large VMs
-	moveCtx, moveCancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer moveCancel()
-
 	if !d.cluster.IsClusterNode {
-		resolved, err := d.resolveStandaloneMoveDestination(moveCtx, details.DestinationStorage)
+		resolved, err := d.resolveStandaloneMoveDestination(ctx, details.DestinationStorage)
 		if err != nil {
 			return nil, err
 		}
@@ -1769,7 +1761,7 @@ try {
 }
 `, p.VMName, p.VMID)
 
-	output, err := hyperv.RunPowerShell(moveCtx, checkScript)
+	output, err := hyperv.RunPowerShell(ctx, checkScript)
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "VM_NOT_FOUND") {
@@ -1822,7 +1814,7 @@ try {
 $res = Get-ClusterResource -VMId "%s" -ErrorAction SilentlyContinue
 if ($res) { Write-Output "YES" } else { Write-Output "NO" }
 `, p.VMID)
-		haResult, _ := hyperv.RunPowerShellRaw(moveCtx, haCheckScript)
+		haResult, _ := hyperv.RunPowerShellRaw(ctx, haCheckScript)
 		isClusterVM = strings.TrimSpace(haResult) == "YES"
 		d.logger.Info("vm_move: HA check", "vm", p.VMName, "is_cluster_vm", isClusterVM)
 	}
@@ -1913,7 +1905,7 @@ try {
 	// Run storage migration in the isolated long-operation lane. It remains serialized
 	// against other long operations but does not block periodic inventory PowerShell calls.
 	lastReported := 5
-	moveOutput, err := hyperv.RunLongPowerShellStream(moveCtx, moveScript, func(line string) {
+	moveOutput, err := hyperv.RunLongPowerShellStream(ctx, moveScript, func(line string) {
 		if !strings.HasPrefix(line, "PROGRESS:") {
 			return
 		}
@@ -2184,9 +2176,6 @@ try {
 	// --- Step 5: Export the VM with progress reporting ---
 	d.reportProgress(ctx, taskID, TaskVMManagement, 20, "Exporting VM (0%)")
 
-	exportCtx, exportCancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer exportCancel()
-
 	exportScript := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
 
@@ -2241,7 +2230,7 @@ if ($exportedPath -ne $templateDestPath) {
 `, p.VMName, d.templatePath, d.templatePath, p.VMName, destPath, details.TemplateName)
 
 	lastExportPercent := 20
-	_, err = hyperv.RunLongPowerShellStream(exportCtx, exportScript, func(line string) {
+	_, err = hyperv.RunLongPowerShellStream(ctx, exportScript, func(line string) {
 		if !strings.HasPrefix(line, "PROGRESS:") {
 			return
 		}
@@ -2263,7 +2252,7 @@ if ($exportedPath -ne $templateDestPath) {
 
 	// --- Step 5a: Shrink the template - convert any Fixed disks to Dynamic so the
 	// template occupies less space in the template store ---
-	d.convertExportedTemplateDisksToDynamic(exportCtx, taskID, destPath)
+	d.convertExportedTemplateDisksToDynamic(ctx, taskID, destPath)
 
 	// --- Step 5b: Build the template metadata (written to disk in step 6b, once
 	// the provisioned disk size from step 6 is known) ---
@@ -2305,7 +2294,7 @@ if ($vmcxFile) {
 }
 `, destPath)
 
-	templateOutput, err := hyperv.RunPowerShell(exportCtx, readTemplateScript)
+	templateOutput, err := hyperv.RunPowerShell(ctx, readTemplateScript)
 	if err != nil {
 		d.logger.Warn("vm_export_template: export succeeded but failed to read template details", "error", err)
 	} else {

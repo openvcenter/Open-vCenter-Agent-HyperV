@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"ovc-agent/internal/hyperv"
 )
@@ -171,32 +170,11 @@ type VMCreateResult struct {
 	State  string `json:"state"`
 }
 
-// diskTimeout calculates a generous timeout for VHD creation based on size and type.
-// Fixed disks need to zero-fill, so they take much longer.
-func diskTimeout(disk VMCreateDisk) time.Duration {
-	if disk.Type == "Fixed" {
-		// ~10s per GB for fixed disks (conservative), minimum 120s
-		t := time.Duration(disk.SizeGB*10) * time.Second
-		if t < 120*time.Second {
-			t = 120 * time.Second
-		}
-		return t
-	}
-	// Dynamic disks are fast
-	return 60 * time.Second
-}
+// vmCreateDiskPhasePercent is the share of the vm_create progress bar given to disk
+// creation; the remaining steps (New-VM, config, start) are quick.
+const vmCreateDiskPhasePercent = 90
 
-// vmCreateTimeout calculates the total timeout for the entire VM creation process.
-// Accounts for disk creation time + extra time for VM setup operations.
-func vmCreateTimeout(p VMCreatePayload) time.Duration {
-	total := 120 * time.Second // base time for VM creation, config, etc.
-	for _, disk := range p.Disks {
-		total += diskTimeout(disk)
-	}
-	return total
-}
-
-func (d *Dispatcher) handleVMCreate(ctx context.Context, payload json.RawMessage) (*VMCreateResult, error) {
+func (d *Dispatcher) handleVMCreate(ctx context.Context, taskID string, payload json.RawMessage) (*VMCreateResult, error) {
 	if payload == nil || string(payload) == "null" || string(payload) == "{}" {
 		return nil, fmt.Errorf("payload is required for vm_create")
 	}
@@ -258,11 +236,6 @@ func (d *Dispatcher) handleVMCreate(ctx context.Context, payload json.RawMessage
 		return nil, err
 	}
 
-	// VM creation can take a long time (Fixed disks, cluster operations).
-	// Use a dedicated context independent of the task timeout.
-	vmCtx, vmCancel := context.WithTimeout(context.Background(), vmCreateTimeout(p))
-	defer vmCancel()
-
 	// --- Step 1: Pre-checks and directory creation ---
 	preCheckScript := fmt.Sprintf(`
 $ErrorActionPreference = 'Stop'
@@ -284,29 +257,25 @@ New-Item -ItemType Directory -Path "%s\Snapshots" -Force | Out-Null
 New-Item -ItemType Directory -Path "%s\Virtual Hard Disks" -Force | Out-Null
 `, p.Name, p.Name, p.Path, p.Path, p.Path, p.Path)
 
-	if _, err := hyperv.RunPowerShell(vmCtx, preCheckScript); err != nil {
+	if _, err := hyperv.RunPowerShell(ctx, preCheckScript); err != nil {
 		return nil, fmt.Errorf("pre-check failed for VM '%s': %s", p.Name, extractPSErrorDetail(err))
 	}
 
-	// --- Step 2: Create each VHD with its own timeout ---
+	// --- Step 2: Create each VHD ---
+	// ctx is bounded by the task's budget, which the backend scales with the disk
+	// sizes (Fixed disks are zero-filled and can take a long time).
+	totalDisks := len(p.Disks)
 	for i, disk := range p.Disks {
-		diskType := "Dynamic"
-		if disk.Type == "Fixed" {
-			diskType = "Fixed"
-		}
+		fixed := disk.Type == "Fixed"
 		sizeBytes := int64(disk.SizeGB * 1024 * 1024 * 1024)
 
-		vhdScript := fmt.Sprintf(`New-VHD -Path "%s" -SizeBytes %d -%s | Out-Null`,
-			disk.Path, sizeBytes, diskType)
-
-		// Use a dedicated timeout for disk creation (Fixed disks can be slow)
-		diskCtx, cancel := context.WithTimeout(context.Background(), diskTimeout(disk))
-		_, err := hyperv.RunPowerShell(diskCtx, vhdScript)
-		cancel()
+		err := d.createDiskWithProgress(ctx, taskID, TaskVMCreate, disk.Path, sizeBytes, fixed,
+			i, totalDisks, vmCreateDiskPhasePercent)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create disk[%d] '%s': %v", i, disk.Path, err)
+			return nil, fmt.Errorf("failed to create disk[%d] '%s': %s", i, disk.Path, extractPSErrorDetail(err, "VHD_CREATE_FAILED:"))
 		}
 	}
+	d.reportProgress(ctx, taskID, TaskVMCreate, vmCreateDiskPhasePercent, fmt.Sprintf("Configuring VM %s", p.Name))
 
 	// --- Step 3: Create VM with the OS disk (first disk) ---
 	osDisk := p.Disks[0]
@@ -343,14 +312,14 @@ Set-VM -VM $vm -AutomaticStopAction ShutDown
 Set-VM -VM $vm -SnapshotFileLocation "%s\Snapshots" -SmartPagingFilePath "%s"
 `, switchLiteral, p.Name, memoryBytes, p.generationArg(), vmParent, osDisk.Path, p.Name, p.CPUCount, p.memoryConfigScript(p.Name), p.Path, p.Path)
 
-	if _, err := hyperv.RunPowerShell(vmCtx, createVMScript); err != nil {
+	if _, err := hyperv.RunPowerShell(ctx, createVMScript); err != nil {
 		return nil, fmt.Errorf("failed to create VM '%s': %v", p.Name, err)
 	}
 
 	// --- Step 4: Attach additional disks ---
 	for _, disk := range p.Disks[1:] {
 		attachScript := fmt.Sprintf(`Add-VMHardDiskDrive -VMName "%s" -Path "%s" -ErrorAction Stop`, p.Name, disk.Path)
-		if _, err := hyperv.RunPowerShell(vmCtx, attachScript); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, attachScript); err != nil {
 			return nil, fmt.Errorf("failed to attach disk '%s': %v", disk.Path, err)
 		}
 	}
@@ -358,21 +327,21 @@ Set-VM -VM $vm -SnapshotFileLocation "%s\Snapshots" -SmartPagingFilePath "%s"
 	// --- Step 5: Configure VM options ---
 	if p.Notes != "" {
 		notesScript := fmt.Sprintf(`Set-VM -VMName "%s" -Notes "%s" -ErrorAction Stop`, p.Name, escapePS(p.Notes))
-		if _, err := hyperv.RunPowerShell(vmCtx, notesScript); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, notesScript); err != nil {
 			d.logger.Warn("failed to set VM notes", "vm", p.Name, "error", err)
 		}
 	}
 
 	if p.VlanID != nil {
 		vlanScript := fmt.Sprintf(`Set-VMNetworkAdapterVlan -VMName "%s" -Access -VlanId %d -ErrorAction Stop`, p.Name, *p.VlanID)
-		if _, err := hyperv.RunPowerShell(vmCtx, vlanScript); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, vlanScript); err != nil {
 			d.logger.Warn("failed to set VLAN", "vm", p.Name, "error", err)
 		}
 	}
 
 	if p.NestedVirtualization != nil && *p.NestedVirtualization {
 		nestedScript := fmt.Sprintf(`Set-VMProcessor -VMName "%s" -ExposeVirtualizationExtensions $true -ErrorAction Stop`, p.Name)
-		if _, err := hyperv.RunPowerShell(vmCtx, nestedScript); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, nestedScript); err != nil {
 			d.logger.Warn("failed to enable nested virtualization", "vm", p.Name, "error", err)
 		}
 	}
@@ -383,7 +352,7 @@ Add-ClusterVirtualMachineRole -VMName "%s"
 Set-VM -Name "%s" -AutomaticStartAction StartIfRunning
 Set-VM -Name "%s" -AutomaticStopAction ShutDown
 `, p.Name, p.Name, p.Name)
-		if _, err := hyperv.RunPowerShell(vmCtx, haScript); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, haScript); err != nil {
 			d.logger.Warn("failed to configure HA", "vm", p.Name, "error", err)
 		}
 	}
@@ -398,7 +367,7 @@ if ($dvd) {
     Add-VMDvdDrive -VMName "%s" -Path "%s" -ErrorAction Stop
 }
 `, p.Name, p.Name, p.DVD, p.Name, p.DVD)
-		if _, err := hyperv.RunPowerShell(vmCtx, dvdScript); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, dvdScript); err != nil {
 			d.logger.Warn("failed to attach DVD/ISO", "vm", p.Name, "iso", p.DVD, "error", err)
 		}
 	}
@@ -410,12 +379,12 @@ if ($dvd) {
 		// Secure Boot based on OS type
 		if strings.EqualFold(p.OS, "linux") {
 			sbScript := fmt.Sprintf(`Set-VMFirmware -VMName "%s" -EnableSecureBoot On -SecureBootTemplate "MicrosoftUEFICertificateAuthority" -ErrorAction Stop`, p.Name)
-			if _, err := hyperv.RunPowerShell(vmCtx, sbScript); err != nil {
+			if _, err := hyperv.RunPowerShell(ctx, sbScript); err != nil {
 				d.logger.Warn("failed to set Secure Boot template for Linux", "vm", p.Name, "error", err)
 			}
 		} else if strings.EqualFold(p.OS, "other") {
 			sbScript := fmt.Sprintf(`Set-VMFirmware -VMName "%s" -EnableSecureBoot Off -ErrorAction Stop`, p.Name)
-			if _, err := hyperv.RunPowerShell(vmCtx, sbScript); err != nil {
+			if _, err := hyperv.RunPowerShell(ctx, sbScript); err != nil {
 				d.logger.Warn("failed to disable Secure Boot", "vm", p.Name, "error", err)
 			}
 		}
@@ -437,13 +406,13 @@ $HD = Get-VMHardDiskDrive -VMName "%s" | Sort-Object ControllerNumber, Controlle
 Set-VMFirmware -VMName "%s" -BootOrder $HD -ErrorAction Stop
 `, p.Name, p.Name)
 		}
-		if _, err := hyperv.RunPowerShell(vmCtx, bootScript); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, bootScript); err != nil {
 			d.logger.Warn("failed to set boot order", "vm", p.Name, "error", err)
 		}
 	}
 
 	// --- Step 6: Get the VM ID ---
-	vmID, err := hyperv.RunPowerShellRaw(vmCtx, fmt.Sprintf(`(Get-VM -Name "%s").Id.ToString()`, p.Name))
+	vmID, err := hyperv.RunPowerShellRaw(ctx, fmt.Sprintf(`(Get-VM -Name "%s").Id.ToString()`, p.Name))
 	if err != nil {
 		return nil, fmt.Errorf("VM created but failed to get ID: %v", err)
 	}
@@ -452,7 +421,7 @@ Set-VMFirmware -VMName "%s" -BootOrder $HD -ErrorAction Stop
 	vmState := "Off"
 	if p.StartNow != nil && *p.StartNow {
 		startScript := fmt.Sprintf(`Start-VM -Name "%s" -ErrorAction Stop`, p.Name)
-		if _, err := hyperv.RunPowerShell(vmCtx, startScript); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, startScript); err != nil {
 			d.logger.Warn("failed to start VM after creation", "vm", p.Name, "error", err)
 		} else {
 			vmState = "Running"

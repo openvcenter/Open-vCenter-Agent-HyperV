@@ -71,6 +71,7 @@ func executeTask(ctx context.Context, cfg *config.Config, job *jobstore.JobRecor
 		Type:    tasks.TaskType(job.TaskType),
 		Action:  job.Action,
 		Payload: json.RawMessage(job.Payload),
+		Timeout: time.Duration(job.TimeoutSeconds) * time.Second,
 	}
 
 	// For artifact_download, the service's Dispatch() returns immediately with "in_progress"

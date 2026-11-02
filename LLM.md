@@ -42,7 +42,7 @@ updates stay fire-and-forget (`PublishTo`).
 
 ## Message envelope
 
-`AgentRequest`: `{ id, function, params, requested_by, issued_at }`
+`AgentRequest`: `{ id, function, params, requested_by, issued_at, timeout_seconds }`
 `AgentResponse`: `{ id, function, status, progress, result, error, vm_id, vm_state, finished_at }`
 `status` ∈ `running | succeeded | failed`.
 
@@ -53,11 +53,28 @@ The agent listens on `<hostid>.request`. On receipt it validates that the
 (`ovc-agent.exe job <id>`) to run it. The `jobqueue` controls concurrency (reads
 are free, writes are mutually exclusive per VM, a host-write blocks everything).
 
+**Job timeout.** `timeout_seconds` is the job's budget, computed by the backend
+(`ovc-backend` `app/task_timeouts.py`; it scales `vm_create` / `vm_edit` /
+`vm_clone` / `vm_move` / `vm_rename` / `vm_export_template` with the disk sizes). It is stored on the job (`jobs.timeout_seconds`); the
+`jobqueue.Monitor` kills the worker after it and `Dispatch` gives the handler's
+context slightly less (minus 1 min, or 10% for short budgets) so it can report
+the failure first. Handlers run all their PowerShell under that context. When it
+is 0/absent the agent falls back to its per-kind tables (`monitor.go`
+`taskTimeouts` / `actionTimeouts`, and the `Dispatch` minimums: 30 min for
+`vm_create` / `vm_edit` / `vm_clone` and the long `vm_management` actions).
+
 ### VM functions (module `vm_management`)
 
 `vm_create`, `vm_edit`, `vm_shutdown`, `vm_start`, `vm_stop`, `vm_restart`,
 `vm_delete`, `vm_inventory` (+ snapshots, migration, dvd, HA, export template,
 rename, move, clone, notes, batch start/stop).
+
+**Disk creation** (`vm_create` disks, `vm_edit` `add_disk`) goes through WMI
+(`Msvm_ImageManagementService.CreateVirtualHardDisk`, `hyperv.CreateVHDWithProgress`)
+instead of `New-VHD`, so the job's `PercentComplete` is published as task progress
+(`Creating disk 1/2: <path> (42%)`). The disks share 0-90% of `vm_create` and 0-99%
+of `vm_edit`. If WMI cannot start the job it falls back to `New-VHD` (no progress,
+logged as a warning).
 
 **`vm_export_template`** exports the VM, then converts every Fixed `.vhd`/`.vhdx`
 in the exported folder to Dynamic in place (same filename kept, so the `.vmcx`

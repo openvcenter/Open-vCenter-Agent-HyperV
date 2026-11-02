@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"ovc-agent/internal/hyperv"
 )
@@ -53,14 +52,6 @@ type VMClonePayload struct {
 	// Only honoured for clone_type "exported". Absent (nil) or true → convert;
 	// only an explicit false keeps the template's Dynamic disks untouched.
 	ExpandDisks *bool `json:"expand_disks"`
-}
-
-// vmCloneTimeout calculates a generous timeout for VM clone operations.
-// Export + Import + disk copy can take a long time depending on VM size.
-func vmCloneTimeout(p VMClonePayload) time.Duration {
-	// Base: 10 minutes for import/export operations + disk copy
-	// This is generous because large VMs with big disks can take a while
-	return 30 * time.Minute
 }
 
 func (d *Dispatcher) handleVMClone(ctx context.Context, taskID string, payload json.RawMessage) (*VMCreateResult, error) {
@@ -170,10 +161,6 @@ if (-not $vm) { throw "Source VM '%s' not found" }
 		}
 	}
 
-	// Use a dedicated long timeout for clone operations
-	cloneCtx, cloneCancel := context.WithTimeout(context.Background(), vmCloneTimeout(p))
-	defer cloneCancel()
-
 	// --- Pre-checks: VM name and destination path ---
 	d.reportProgress(ctx, taskID, TaskVMClone, 5, "Validating pre-conditions")
 	preCheckScript := fmt.Sprintf(`
@@ -191,7 +178,7 @@ if (Test-Path "%s") {
 }
 `, p.Name, p.Name, p.Path, p.Path)
 
-	if _, err := hyperv.RunPowerShell(cloneCtx, preCheckScript); err != nil {
+	if _, err := hyperv.RunPowerShell(ctx, preCheckScript); err != nil {
 		return nil, fmt.Errorf("pre-check failed: %s", extractPSErrorDetail(err))
 	}
 
@@ -218,7 +205,7 @@ if ($snaps.Count -gt 0) {
 }
 `, p.SourceVMName, p.SourceVMName, p.SourceVMName, p.SourceVMName, p.SourceVMName)
 
-		if _, err := hyperv.RunPowerShell(cloneCtx, importedPreCheck); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, importedPreCheck); err != nil {
 			return nil, fmt.Errorf("source VM validation failed: %s", extractPSErrorDetail(err))
 		}
 
@@ -275,7 +262,7 @@ Remove-Job $job -Force -ErrorAction SilentlyContinue
 `, p.ExportFolderRoot, p.ExportFolderRoot, p.SourceVMName, p.ExportFolderRoot)
 
 		lastExportPercent := 10
-		_, err := hyperv.RunLongPowerShellStream(cloneCtx, exportScript, func(line string) {
+		_, err := hyperv.RunLongPowerShellStream(ctx, exportScript, func(line string) {
 			if !strings.HasPrefix(line, "PROGRESS:") {
 				return
 			}
@@ -389,12 +376,12 @@ $cloneVM.Id.ToString()
 		p.Path, p.Path, p.Path,
 		p.Name, p.Name, originalVMName, p.Name)
 
-	output, err := hyperv.RunPowerShell(cloneCtx, importScript)
+	output, err := hyperv.RunPowerShell(ctx, importScript)
 	if err != nil {
 		// Cleanup on failure
 		if p.CloneType == "imported" && sourceExportPath != "" {
 			cleanupScript := fmt.Sprintf(`if (Test-Path "%s") { Remove-Item -Path "%s" -Recurse -Force -ErrorAction SilentlyContinue }`, sourceExportPath, sourceExportPath)
-			hyperv.RunPowerShell(cloneCtx, cleanupScript)
+			hyperv.RunPowerShell(ctx, cleanupScript)
 		}
 		return nil, fmt.Errorf("failed to import/clone VM: %s", extractPSErrorDetail(err))
 	}
@@ -405,7 +392,7 @@ $cloneVM.Id.ToString()
 	if p.CloneType == "imported" && sourceExportPath != "" {
 		d.reportProgress(ctx, taskID, TaskVMClone, 80, "Cleaning up temporary export files")
 		cleanupScript := fmt.Sprintf(`if (Test-Path "%s") { Remove-Item -Path "%s" -Recurse -Force -ErrorAction SilentlyContinue }`, sourceExportPath, sourceExportPath)
-		hyperv.RunPowerShell(cloneCtx, cleanupScript) // best-effort
+		hyperv.RunPowerShell(ctx, cleanupScript) // best-effort
 	}
 
 	// --- Expand the deployed template's disks to Fixed ---
@@ -413,14 +400,14 @@ $cloneVM.Id.ToString()
 	// wants full-size Fixed disks. The user opts out with expand_disks:false.
 	if p.CloneType == "exported" && (p.ExpandDisks == nil || *p.ExpandDisks) {
 		d.reportProgress(ctx, taskID, TaskVMClone, 82, "Expanding disks to fixed")
-		d.expandClonedDisksToFixed(cloneCtx, p.Name)
+		d.expandClonedDisksToFixed(ctx, p.Name)
 	}
 
 	// --- Configure VM settings ---
 	d.reportProgress(ctx, taskID, TaskVMClone, 85, "Configuring VM settings")
 	if p.CPUCount > 0 {
 		script := fmt.Sprintf(`Set-VMProcessor -VMName "%s" -Count %d -ErrorAction Stop`, p.Name, p.CPUCount)
-		if _, err := hyperv.RunPowerShell(cloneCtx, script); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, script); err != nil {
 			d.logger.Warn("vm_clone: failed to set CPU count", "vm", p.Name, "error", err)
 		}
 	}
@@ -428,28 +415,28 @@ $cloneVM.Id.ToString()
 	if p.MemoryMB > 0 {
 		memBytes := int64(p.MemoryMB) * 1024 * 1024
 		script := fmt.Sprintf(`Set-VMMemory -VMName "%s" -StartupBytes %d -ErrorAction Stop`, p.Name, memBytes)
-		if _, err := hyperv.RunPowerShell(cloneCtx, script); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, script); err != nil {
 			d.logger.Warn("vm_clone: failed to set memory", "vm", p.Name, "error", err)
 		}
 	}
 
 	if p.Notes != "" {
 		script := fmt.Sprintf(`Set-VM -VMName "%s" -Notes "%s" -ErrorAction Stop`, p.Name, escapePS(p.Notes))
-		if _, err := hyperv.RunPowerShell(cloneCtx, script); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, script); err != nil {
 			d.logger.Warn("vm_clone: failed to set notes", "vm", p.Name, "error", err)
 		}
 	}
 
 	if p.VlanID != nil {
 		script := fmt.Sprintf(`Set-VMNetworkAdapterVlan -VMName "%s" -Access -VlanId %d -ErrorAction Stop`, p.Name, *p.VlanID)
-		if _, err := hyperv.RunPowerShell(cloneCtx, script); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, script); err != nil {
 			d.logger.Warn("vm_clone: failed to set VLAN", "vm", p.Name, "error", err)
 		}
 	}
 
 	if p.NestedVirtualization != nil && *p.NestedVirtualization {
 		script := fmt.Sprintf(`Set-VMProcessor -VMName "%s" -ExposeVirtualizationExtensions $true -ErrorAction Stop`, p.Name)
-		if _, err := hyperv.RunPowerShell(cloneCtx, script); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, script); err != nil {
 			d.logger.Warn("vm_clone: failed to enable nested virtualization", "vm", p.Name, "error", err)
 		}
 	}
@@ -460,7 +447,7 @@ Add-ClusterVirtualMachineRole -VMName "%s"
 Set-VM -Name "%s" -AutomaticStartAction StartIfRunning
 Set-VM -Name "%s" -AutomaticStopAction ShutDown
 `, p.Name, p.Name, p.Name)
-		if _, err := hyperv.RunPowerShell(cloneCtx, script); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, script); err != nil {
 			d.logger.Warn("vm_clone: failed to configure HA", "vm", p.Name, "error", err)
 		}
 	}
@@ -470,7 +457,7 @@ Set-VM -Name "%s" -AutomaticStopAction ShutDown
 	if p.StartNow != nil && *p.StartNow {
 		d.reportProgress(ctx, taskID, TaskVMClone, 95, "Starting VM")
 		script := fmt.Sprintf(`Start-VM -Name "%s" -ErrorAction Stop`, p.Name)
-		if _, err := hyperv.RunPowerShell(cloneCtx, script); err != nil {
+		if _, err := hyperv.RunPowerShell(ctx, script); err != nil {
 			d.logger.Warn("vm_clone: failed to start VM after clone", "vm", p.Name, "error", err)
 		} else {
 			vmState = "Running"

@@ -44,6 +44,9 @@ type TaskMessage struct {
 	Type    TaskType        `json:"type"`
 	Action  string          `json:"action"`
 	Payload json.RawMessage `json:"payload"`
+	// Timeout is the backend-computed job budget (AgentRequest.timeout_seconds);
+	// the worker is killed after it. 0 = the per-kind defaults below.
+	Timeout time.Duration `json:"-"`
 }
 
 // GetTaskID returns the task ID.
@@ -375,7 +378,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, msg *TaskMessage) *TaskRespon
 	}
 
 	taskTimeout := d.taskTimeout
-	if msg.Type == TaskVMManagement {
+	if msg.Timeout > 0 {
+		// Backend-computed budget: the jobqueue.Monitor kills the worker at
+		// msg.Timeout, so keep taskCtx a touch under it and let the handler
+		// report a timeout instead of being killed mid-flight.
+		taskTimeout = msg.Timeout - min(time.Minute, msg.Timeout/10)
+	} else if msg.Type == TaskVMManagement {
 		switch msg.Action {
 		case "vm_batch_start", "vm_batch_stop", "vm_move", "vm_rename", "vm_export_template":
 			// These actions run long PowerShell operations (storage migration, export, batch).
@@ -393,9 +401,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, msg *TaskMessage) *TaskRespon
 		}
 	}
 
-	// vm_create / vm_edit can create or expand multiple disks (Fixed VHDs
-	// zero-fill at ~10 min each) - extend the task context accordingly.
-	if (msg.Type == TaskVMEdit || msg.Type == TaskVMCreate) && taskTimeout < 30*time.Minute {
+	// vm_create / vm_edit create or expand disks (Fixed VHDs zero-fill) and
+	// vm_clone exports/imports them - extend the task context accordingly.
+	if msg.Timeout <= 0 && (msg.Type == TaskVMEdit || msg.Type == TaskVMCreate || msg.Type == TaskVMClone) && taskTimeout < 30*time.Minute {
 		taskTimeout = 30 * time.Minute
 	}
 
@@ -430,7 +438,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, msg *TaskMessage) *TaskRespon
 		case TaskVMStatus:
 			result, taskErr = d.handleVMStatus(taskCtx, msg.Payload)
 		case TaskVMCreate:
-			result, taskErr = d.handleVMCreate(taskCtx, msg.Payload)
+			result, taskErr = d.handleVMCreate(taskCtx, msg.GetTaskID(), msg.Payload)
 		case TaskVMClone:
 			result, taskErr = d.handleVMClone(taskCtx, msg.GetTaskID(), msg.Payload)
 		case TaskVMEdit:

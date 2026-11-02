@@ -437,14 +437,15 @@ func runAgent(ctx context.Context) error {
 			// the flat function via ResolveFunction; the executor rebuilds a
 			// TaskMessage from these.
 			job := &jobstore.JobRecord{
-				JobID:        generateJobID(),
-				TaskID:       req.ID,
-				TaskType:     string(taskType),
-				Action:       action,
-				VMIdentifier: vmIdentifier,
-				Payload:      req.Params,
-				Status:       jobstore.StatusQueued,
-				CreatedAt:    time.Now().UTC(),
+				JobID:          generateJobID(),
+				TaskID:         req.ID,
+				TaskType:       string(taskType),
+				Action:         action,
+				VMIdentifier:   vmIdentifier,
+				Payload:        req.Params,
+				Status:         jobstore.StatusQueued,
+				TimeoutSeconds: req.TimeoutSeconds,
+				CreatedAt:      time.Now().UTC(),
 			}
 
 			if err := store.Create(job); err != nil {
