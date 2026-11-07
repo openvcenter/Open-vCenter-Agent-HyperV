@@ -50,8 +50,6 @@ refresh_interval_host = 600
 ; liveness heartbeat (agent_status); independent of refresh_interval_host,
 ; must stay below the backend's agent_offline_after_seconds (120s). Optional.
 heartbeat_interval = 60
-; quick host/VM metrics (CPU, memory, disk, network); 0 disables
-metrics_interval = 300
 template_path = D:\HyperV\TEMPLATES
 local_iso_path = D:\HyperV\ISOS
 aditional_vm_storage = E:\HyperV

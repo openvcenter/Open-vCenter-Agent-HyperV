@@ -12,7 +12,7 @@ import (
 )
 
 // periodicRefreshPrefix marks a job the Scheduler created for one of its own
-// periodic inventory/status/metrics refreshes. Such jobs have no backend Task,
+// periodic inventory/status refreshes. Such jobs have no backend Task,
 // so the worker must not publish a response envelope for them.
 const periodicRefreshPrefix = "refresh-"
 
@@ -34,7 +34,6 @@ const defaultHeartbeatInterval = 60 * time.Second
 type SchedulerConfig struct {
 	RefreshIntervalVMs  time.Duration // interval for vm_inventory (0 means disabled)
 	RefreshIntervalHost time.Duration // interval for hardware_inventory, template_inventory, iso_inventory (0 means disabled)
-	MetricsInterval     time.Duration // interval for host_metrics + vm_metrics (0 means disabled)
 	HeartbeatInterval   time.Duration // interval for agent_status; always on (<=0 uses defaultHeartbeatInterval)
 }
 
@@ -80,8 +79,6 @@ func (s *Scheduler) buildSpecs() []refreshSpec {
 		{taskType: "template_inventory", interval: s.config.RefreshIntervalHost, delay: 60 * time.Second},
 		{taskType: "iso_inventory", interval: s.config.RefreshIntervalHost, delay: 90 * time.Second},
 		{taskType: "agent_status", interval: heartbeat, delay: 15 * time.Second},
-		{taskType: "vm_metrics", interval: s.config.MetricsInterval, delay: 20 * time.Second},
-		{taskType: "host_metrics", interval: s.config.MetricsInterval, delay: 45 * time.Second},
 	}
 }
 

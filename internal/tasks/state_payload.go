@@ -41,16 +41,6 @@ func StatePayload(taskType TaskType, result interface{}) (kind string, payload i
 			items = r.Items
 		}
 		return "iso_inventory", protocol.ImageInventoryPayload{ReportedAt: now, Items: items}, true
-	case TaskHostMetrics:
-		if r, isType := result.(*HostMetricsResult); isType && r != nil {
-			return "host_metrics", r.toPayload(now), true
-		}
-	case TaskVMMetrics:
-		vms := interface{}([]VMMetric{})
-		if r, isType := result.(*VMMetricsResult); isType && r != nil {
-			vms = r.VMs
-		}
-		return "vm_metrics", protocol.VMMetricsPayload{ReportedAt: now, VMs: vms}, true
 	}
 
 	return "", nil, false

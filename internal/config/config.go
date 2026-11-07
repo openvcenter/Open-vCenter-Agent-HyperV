@@ -15,7 +15,6 @@ const (
 	DefaultTaskTimeout         = 60
 	DefaultRefreshIntervalVMs  = 300 // 5 minutes
 	DefaultRefreshIntervalHost = 600 // 10 minutes
-	DefaultMetricsInterval     = 300 // 5 minutes - quick host/VM metrics sampling
 	DefaultMaxConcurrentJobs   = 4
 
 	// DefaultHeartbeatInterval is how often the agent republishes agent_status.
@@ -70,7 +69,6 @@ type Config struct {
 	MaxConcurrentJobs   int      // max number of concurrent worker processes (1-64, default 4)
 	RefreshIntervalVMs  int      // seconds between automatic VM inventory pushes (0 = disabled)
 	RefreshIntervalHost int      // seconds between automatic host inventory pushes (0 = disabled)
-	MetricsInterval     int      // seconds between quick host/VM metrics samples (0 = disabled)
 	HeartbeatInterval   int      // seconds between agent_status heartbeats (always on; <=0 falls back to default)
 	TemplatePath        string   // path where exported VM templates are stored
 	LocalISOPath        string   // path where ISO files are stored (optional)
@@ -85,7 +83,6 @@ func newConfig() *Config {
 		MaxConcurrentJobs:   DefaultMaxConcurrentJobs,
 		RefreshIntervalVMs:  DefaultRefreshIntervalVMs,
 		RefreshIntervalHost: DefaultRefreshIntervalHost,
-		MetricsInterval:     DefaultMetricsInterval,
 		HeartbeatInterval:   DefaultHeartbeatInterval,
 	}
 }
@@ -203,9 +200,6 @@ func (c *Config) loadFromINI(path string) error {
 	}
 	if v, err := section.Key("refresh_interval_host").Int(); err == nil && v >= 0 {
 		c.RefreshIntervalHost = v
-	}
-	if v, err := section.Key("metrics_interval").Int(); err == nil && v >= 0 {
-		c.MetricsInterval = v
 	}
 	if v, err := section.Key("heartbeat_interval").Int(); err == nil && v > 0 {
 		c.HeartbeatInterval = v

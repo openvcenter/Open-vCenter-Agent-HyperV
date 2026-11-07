@@ -44,7 +44,6 @@ type VMInfo struct {
 	NestedVirtualization bool         `json:"nestedVirtualization"`
 	SecureBoot           bool         `json:"secureBoot"`
 	SecureBootTemplate   string       `json:"secureBootTemplate"`
-	MetricsEnabled       bool         `json:"metricsEnabled"`
 	// GuestOS is the guest operating system reported by the Hyper-V KVP
 	// integration service (Msvm_SummaryInformation.GuestOperatingSystem). It is
 	// only available while the VM is running with integration services active,
@@ -113,7 +112,6 @@ type vmBasicInfo struct {
 	AutomaticStop       string  `json:"automaticStop"`
 	Path                string  `json:"path"`
 	CreationTime        string  `json:"creationTime"`
-	MetricsEnabled      bool    `json:"metricsEnabled"`
 	GuestOS             *string `json:"guestOs"`
 }
 
@@ -560,7 +558,6 @@ try {
             automaticStop       = "$($v.AutomaticStopAction)"
             path             = $v.Path
             creationTime     = $v.CreationTime.ToString("o")
-            metricsEnabled   = [bool]$v.ResourceMeteringEnabled
             guestOs          = $guestOs
         })
     }
@@ -710,7 +707,6 @@ func assembleVMInventory(
 			AutomaticStop:        b.AutomaticStop,
 			Path:                 b.Path,
 			CreationTime:         b.CreationTime,
-			MetricsEnabled:       b.MetricsEnabled,
 			NICs:                 nicsMap[b.Name],
 			VHDs:                 vhdsMap[b.Name],
 			DVD:                  dvdMap[b.Name],

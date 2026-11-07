@@ -188,7 +188,6 @@ try {
     automaticStop    = "$($v.AutomaticStopAction)"
     path             = $v.Path
     creationTime     = $v.CreationTime.ToString("o")
-    metricsEnabled   = [bool]$v.ResourceMeteringEnabled
     nics             = $nics
     vhds             = $vhds
     dvd              = $dvdPath

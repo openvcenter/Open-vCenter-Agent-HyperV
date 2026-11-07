@@ -25,8 +25,6 @@ const (
 	TaskHostManagement    TaskType = "host_management"
 	TaskTemplateInventory TaskType = "template_inventory"
 	TaskISOInventory      TaskType = "iso_inventory"
-	TaskHostMetrics       TaskType = "host_metrics"
-	TaskVMMetrics         TaskType = "vm_metrics"
 
 	// TaskAgentUpgrade is the internal task type for the agent self-upgrade
 	// (wire function "host_update_agent"). The string value is kept as
@@ -451,10 +449,6 @@ func (d *Dispatcher) Dispatch(ctx context.Context, msg *TaskMessage) *TaskRespon
 			result, taskErr = d.handleTemplateInventory(taskCtx)
 		case TaskISOInventory:
 			result, taskErr = d.handleISOInventory(taskCtx)
-		case TaskHostMetrics:
-			result, taskErr = d.handleHostMetrics(taskCtx)
-		case TaskVMMetrics:
-			result, taskErr = d.handleVMMetrics(taskCtx)
 		case TaskAgentUpgrade:
 			// The agent self-upgrade runs asynchronously in a goroutine so it
 			// doesn't block task consumption. It publishes its own progress and

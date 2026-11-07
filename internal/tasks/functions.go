@@ -18,7 +18,6 @@ var vmManagementActions = map[string]bool{
 	"vm_rename": true, "vm_move": true, "vm_export_template": true,
 	"notes_edit": true, "refresh_status": true, "vm_startup_change": true,
 	"vm_batch_start": true, "vm_batch_stop": true,
-	"vm_enable_metrics": true, "vm_disable_metrics": true,
 }
 
 // hostManagementActions are the functions dispatched through handleHostManagement.
@@ -56,10 +55,6 @@ func ResolveFunction(fn string) (taskType TaskType, action string) {
 		return TaskTemplateInventory, ""
 	case fn == "iso_inventory":
 		return TaskISOInventory, ""
-	case fn == "host_metrics":
-		return TaskHostMetrics, ""
-	case fn == "vm_metrics":
-		return TaskVMMetrics, ""
 	default:
 		return TaskType(fn), ""
 	}

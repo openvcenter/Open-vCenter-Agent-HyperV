@@ -17,6 +17,7 @@ import (
 	"ovc-agent/internal/hyperv"
 	"ovc-agent/internal/jobqueue"
 	"ovc-agent/internal/jobstore"
+	"ovc-agent/internal/perf"
 	"ovc-agent/internal/preflight"
 	"ovc-agent/internal/protocol"
 	"ovc-agent/internal/rabbitmq"
@@ -212,7 +213,8 @@ func runAgent(ctx context.Context) error {
 	}
 
 	// Declare the quick-metrics queues as plain durable queues (NO x-max-length -
-	// they are a short time-series, not last-value), matching ovc-backend.
+	// they are a short time-series, not last-value), matching ovc-backend. The
+	// perf.Sampler started below publishes to them.
 	for _, kind := range []string{"vm_metrics", "host_metrics"} {
 		if err := publisher.DeclarePlainQueue(cfg.StateQueue(kind)); err != nil {
 			return fmt.Errorf("failed to declare metrics queue '%s': %v", kind, err)
@@ -287,7 +289,6 @@ func runAgent(ctx context.Context) error {
 	schedulerCfg := jobqueue.SchedulerConfig{
 		RefreshIntervalVMs:  time.Duration(cfg.RefreshIntervalVMs) * time.Second,
 		RefreshIntervalHost: time.Duration(cfg.RefreshIntervalHost) * time.Second,
-		MetricsInterval:     time.Duration(cfg.MetricsInterval) * time.Second,
 		HeartbeatInterval:   time.Duration(cfg.HeartbeatInterval) * time.Second,
 	}
 	scheduler := jobqueue.NewScheduler(store, schedulerCfg, logger, queueDispatcher.TriggerEvaluation)
@@ -307,6 +308,19 @@ func runAgent(ctx context.Context) error {
 	go scheduler.Run(ctx)
 	go retention.Run(ctx)
 	go queueDispatcher.RunLoop(ctx.Done())
+
+	// Quick metrics: PDH counters sampled in this process, published once per
+	// collection interval (set by the backend through set_metrics_config).
+	var sampler *perf.Sampler
+	if src, err := perf.NewSource(); err != nil {
+		logger.Error("metrics sampler disabled: performance counters unavailable", "error", err)
+	} else {
+		sampler = perf.NewSampler(src, perf.LoadInterval(config.AgentDir()),
+			func(ctx context.Context, kind string, payload any) error {
+				return publisher.PublishConfirmed(ctx, cfg.StateQueue(kind), payload)
+			}, logger)
+		go sampler.Run(ctx)
+	}
 
 	// Create a minimal task dispatcher for the synchronous startup agent_status
 	startupDispatcher := tasks.NewDispatcher(cfg.HostID, taskTimeout, cfg.TemplatePath, cfg.LocalISOPath, cfg.AdditionalVMStorage, logger)
@@ -406,6 +420,15 @@ func runAgent(ctx context.Context) error {
 				continue
 			}
 
+			// set_metrics_config is applied here, not as a job: the sampler
+			// lives in this process. No AgentResponse - the backend confirms
+			// through the metrics_interval of the next agent_status.
+			if req.Function == "set_metrics_config" {
+				applyMetricsConfig(req.Params, sampler, logger)
+				delivery.Ack(false)
+				continue
+			}
+
 			taskType, action := tasks.ResolveFunction(req.Function)
 
 			logger.Debug("received agent request",
@@ -469,6 +492,24 @@ func runAgent(ctx context.Context) error {
 			queueDispatcher.TriggerEvaluation()
 		}
 	}
+}
+
+// applyMetricsConfig handles set_metrics_config: it saves the interval (so
+// agent_status reports it and a restart keeps it) and retimes the sampler.
+func applyMetricsConfig(params json.RawMessage, sampler *perf.Sampler, logger *slog.Logger) {
+	var p protocol.MetricsConfigParams
+	if err := json.Unmarshal(params, &p); err != nil || p.IntervalSeconds <= 0 {
+		logger.Error("invalid set_metrics_config params", "error", err, "params", string(params))
+		return
+	}
+	interval := perf.ValidInterval(p.IntervalSeconds)
+	if err := perf.SaveInterval(config.AgentDir(), interval); err != nil {
+		logger.Error("failed to save metrics interval", "error", err)
+	}
+	if sampler != nil {
+		sampler.SetInterval(interval)
+	}
+	logger.Info("metrics interval applied", "interval_seconds", interval)
 }
 
 // extractVMIdentifier pulls the VM identifier out of an AgentRequest's params,

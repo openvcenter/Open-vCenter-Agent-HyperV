@@ -131,11 +131,29 @@ task** is waiting on them, the worker publishes only to the state queue
 (`<hostid>.<kind>`) - it does **not** send an `AgentResponse` on `<hostid>.response`.
 
 `host_metrics` + `vm_metrics` - quick metrics (CPU / memory / disk / network),
-sampled every `metrics_interval` seconds (default 300, `0` disables). Plain
-durable queues (NOT last-value): a short time-series, the backend keeps only the
-last hour. `vm_metrics` only includes VMs with Hyper-V resource metering enabled
-(`Enable-VMResourceMetering` via the `vm_enable_metrics` action); `vm_inventory`
-reports `metricsEnabled` per VM.
+published by `perf.Sampler` (`internal/perf`) in the service process, not by jobs.
+It reads PDH counters (`pdh.dll`, `PdhAddEnglishCounterW`) every 5 s and publishes
+the mean and peak once per collection interval. Plain durable queues (NOT
+last-value): a short time-series. No PowerShell on the sampling path; a
+PowerShell call refreshes the VM topology - which instance belongs to which VM -
+every 30 min, or sooner (at most once a minute) when a counter instance appears
+that does not map. Instances still unmapped right after a refresh (an ISO, a
+host vNIC) are ignored until the next one:
+
+- host: CPU from `Hyper-V Hypervisor Logical Processor(_Total)` (the `Processor`
+  sets only see the root partition), memory from `GlobalMemoryStatusEx`, disks
+  from `PhysicalDisk(*)`, network from `Network Interface(*)`.
+- VMs (every running VM): CPU from `Hyper-V Hypervisor Virtual Processor`
+  (`<vm>:Hv VP <n>`, by name), memory from `Hyper-V Dynamic Memory VM` (by name;
+  falls back to `MemoryAssigned`), disks from `Hyper-V Virtual Storage Device`
+  (by VHD path), network from `Hyper-V Virtual Network Adapter` (by VM/adapter
+  GUID). A name shared by two VMs leaves their CPU/memory null.
+
+The collection interval comes from the backend's Application Preferences: the
+`set_metrics_config` request (`params: {interval_seconds}`) is handled directly
+by the service loop (no job, no `AgentResponse`), saved to `metrics_interval`
+next to the binary and reported back as `metrics_interval` in `agent_status`.
+Default 300 s until the backend sends one.
 
 `vm_inventory` also carries, per VM, two best-effort fields that are omitted when
 unknown (the backend then keeps the last stored value):
@@ -172,7 +190,6 @@ log_level = info
 refresh_interval_vms = 180
 refresh_interval_host = 600
 heartbeat_interval = 60
-metrics_interval = 300
 template_path = D:\HyperV\TEMPLATES
 local_iso_path = D:\HyperV\ISOS
 aditional_vm_storage = E:\HyperV

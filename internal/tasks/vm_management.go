@@ -210,10 +210,6 @@ func (d *Dispatcher) handleVMManagement(ctx context.Context, taskID string, payl
 		return d.handleVMMove(ctx, taskID, p)
 	case "vm_startup_change":
 		return d.handleVMStartupChange(ctx, p)
-	case "vm_enable_metrics":
-		return d.handleVMResourceMetering(ctx, p, true)
-	case "vm_disable_metrics":
-		return d.handleVMResourceMetering(ctx, p, false)
 	default:
 		return nil, fmt.Errorf("unknown vm_management action: %s", p.Action)
 	}
@@ -2042,37 +2038,6 @@ func (d *Dispatcher) handleVMStartupChange(ctx context.Context, p VMManagementPa
 	}
 
 	return d.handleVMStatus(ctx, json.RawMessage(statusPayload))
-}
-
-// handleVMResourceMetering toggles Hyper-V resource metering on a VM. When on,
-// the VM starts appearing in <hostid>.vm_metrics and the next vm_inventory
-// reports metricsEnabled: true (the dispatcher refreshes inventory after every
-// vm_management task).
-func (d *Dispatcher) handleVMResourceMetering(ctx context.Context, p VMManagementPayload, enable bool) (*VMManagementResult, error) {
-	if p.VMName == "" {
-		return nil, fmt.Errorf("vm_name is required for %s action", p.Action)
-	}
-
-	cmdlet := "Enable-VMResourceMetering"
-	if !enable {
-		cmdlet = "Disable-VMResourceMetering"
-	}
-
-	script := fmt.Sprintf(`Get-VM -Name "%s" | %s -ErrorAction Stop`, p.VMName, cmdlet)
-	if _, err := hyperv.RunPowerShell(ctx, script); err != nil {
-		return nil, fmt.Errorf("failed to run %s for VM '%s': %s", cmdlet, p.VMName, extractPSErrorDetail(err))
-	}
-
-	status := "disabled"
-	if enable {
-		status = "enabled"
-	}
-	return &VMManagementResult{
-		VMID:   p.VMID,
-		VMName: p.VMName,
-		Action: p.Action,
-		Status: status,
-	}, nil
 }
 
 func (d *Dispatcher) handleVMExportTemplate(ctx context.Context, taskID string, p VMManagementPayload) (*VMExportTemplateResult, error) {

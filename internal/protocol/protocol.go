@@ -78,7 +78,10 @@ type AgentStatusPayload struct {
 	IP            string `json:"ip,omitempty"`
 	OSVersion     string `json:"os_version,omitempty"`
 	UptimeSeconds int64  `json:"uptime_seconds,omitempty"`
-	ReportedAt    string `json:"reported_at"`
+	// MetricsInterval is the metrics collection window currently applied, so
+	// the backend can push set_metrics_config when it differs from its setting.
+	MetricsInterval int    `json:"metrics_interval"`
+	ReportedAt      string `json:"reported_at"`
 }
 
 type VMInventoryPayload struct {
@@ -97,24 +100,83 @@ type ImageInventoryPayload struct {
 }
 
 // --- quick metrics payloads (short time-series queues, NOT last-value) --------
-// Consumed by ovc-backend app/services/inventory.py::apply_host_metrics /
-// apply_vm_metrics. Top-level reported_at is snake_case like the other payloads;
-// the metric fields are camelCase like the inventory item shapes.
+// Published by internal/perf.Sampler once per collection window and consumed by
+// ovc-backend app/services/inventory.py::apply_host_metrics / apply_vm_metrics.
+// Values are the mean over the window's 5 s samples unless named *Max (peak).
+// Rates are per second; nil means the counter was not available.
 
 type HostMetricsPayload struct {
-	ReportedAt    string   `json:"reported_at"`
-	CPUPercent    *float64 `json:"cpuPercent"`
-	MemPercent    *float64 `json:"memPercent"`
-	MemUsedBytes  *int64   `json:"memUsedBytes"`
-	MemTotalBytes *int64   `json:"memTotalBytes"`
-	DiskLatencyMs *float64 `json:"diskLatencyMs"`
-	NetRxBps      *int64   `json:"netRxBps"`
-	NetTxBps      *int64   `json:"netTxBps"`
-	Disks         any      `json:"disks"`
-	Net           any      `json:"net"`
+	ReportedAt         string          `json:"reported_at"`
+	CPUPercent         *float64        `json:"cpuPercent"`
+	CPUMaxPercent      *float64        `json:"cpuMaxPercent"`
+	MemPercent         *float64        `json:"memPercent"`
+	MemUsedBytes       *float64        `json:"memUsedBytes"`
+	MemTotalBytes      *float64        `json:"memTotalBytes"`
+	DiskReadBps        *float64        `json:"diskReadBps"`
+	DiskWriteBps       *float64        `json:"diskWriteBps"`
+	DiskReadIops       *float64        `json:"diskReadIops"`
+	DiskWriteIops      *float64        `json:"diskWriteIops"`
+	DiskReadLatencyMs  *float64        `json:"diskReadLatencyMs"`
+	DiskWriteLatencyMs *float64        `json:"diskWriteLatencyMs"`
+	DiskLatencyMaxMs   *float64        `json:"diskLatencyMaxMs"`
+	NetRxBps           *float64        `json:"netRxBps"`
+	NetTxBps           *float64        `json:"netTxBps"`
+	Disks              []HostDiskStats `json:"disks"`
+	Net                []HostNetStats  `json:"net"`
+}
+
+type HostDiskStats struct {
+	Name           string   `json:"name"`
+	ReadBps        *float64 `json:"readBps"`
+	WriteBps       *float64 `json:"writeBps"`
+	ReadIops       *float64 `json:"readIops"`
+	WriteIops      *float64 `json:"writeIops"`
+	ReadLatencyMs  *float64 `json:"readLatencyMs"`
+	WriteLatencyMs *float64 `json:"writeLatencyMs"`
+	QueueLength    *float64 `json:"queueLength"`
+	BusyPercent    *float64 `json:"busyPercent"`
+}
+
+type HostNetStats struct {
+	Name  string   `json:"name"`
+	RxBps *float64 `json:"rxBps"`
+	TxBps *float64 `json:"txBps"`
 }
 
 type VMMetricsPayload struct {
-	ReportedAt string `json:"reported_at"`
-	VMs        any    `json:"vms"`
+	ReportedAt string          `json:"reported_at"`
+	VMs        []VMMetricStats `json:"vms"`
+}
+
+type VMMetricStats struct {
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	CPUPercent    *float64      `json:"cpuPercent"`
+	CPUMaxPercent *float64      `json:"cpuMaxPercent"`
+	MemBytes      *float64      `json:"memBytes"`
+	MemPressure   *float64      `json:"memPressure"`
+	DiskReadBps   *float64      `json:"diskReadBps"`
+	DiskWriteBps  *float64      `json:"diskWriteBps"`
+	DiskReadIops  *float64      `json:"diskReadIops"`
+	DiskWriteIops *float64      `json:"diskWriteIops"`
+	DiskLatencyMs *float64      `json:"diskLatencyMs"`
+	NetRxBps      *float64      `json:"netRxBps"`
+	NetTxBps      *float64      `json:"netTxBps"`
+	Disks         []VMDiskStats `json:"disks"`
+}
+
+type VMDiskStats struct {
+	Path        string   `json:"path"`
+	ReadBps     *float64 `json:"readBps"`
+	WriteBps    *float64 `json:"writeBps"`
+	ReadIops    *float64 `json:"readIops"`
+	WriteIops   *float64 `json:"writeIops"`
+	LatencyMs   *float64 `json:"latencyMs"`
+	QueueLength *float64 `json:"queueLength"`
+}
+
+// MetricsConfigParams are the params of the set_metrics_config request: the
+// collection window the backend's Application Preferences ask for.
+type MetricsConfigParams struct {
+	IntervalSeconds int `json:"interval_seconds"`
 }
