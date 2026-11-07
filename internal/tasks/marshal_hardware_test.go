@@ -26,7 +26,8 @@ func TestHardwareInventoryResult_MarshalsCanonicalShape(t *testing.T) {
 		DiskC:              DiskInfo{TotalGB: 62.07, FreeGB: 42.51},
 		Storage:            []StorageInfo{{Name: "VMs", Path: `D:\`, TotalGB: 175.75, FreeGB: 173.42}},
 		NetAdapters: []NetAdapterInfo{
-			{Name: "Ethernet", Description: "Realtek PCIe GbE", MAC: "00-11-22-33-44-55", SpeedBps: 1_000_000_000, Connected: true},
+			{Name: "Ethernet", Description: "Realtek PCIe GbE", MAC: "00-11-22-33-44-55", SpeedBps: 1_000_000_000, Connected: true,
+				IPv6Enabled: ptr(false), VMQEnabled: ptr(true)},
 			{Name: "Ethernet 2", Description: "Intel I350", MAC: "00-11-22-33-44-56", SpeedBps: 0, Connected: false},
 		},
 		VSwitches: []VSwitchInfo{
@@ -67,8 +68,14 @@ func TestHardwareInventoryResult_MarshalsCanonicalShape(t *testing.T) {
 		n0["description"] != "Realtek PCIe GbE" || n0["speedBps"].(float64) != 1e9 {
 		t.Errorf("network[0] = %v", n0)
 	}
+	if n0 := network[0].(map[string]any); n0["ipv6Enabled"] != false || n0["vmqEnabled"] != true {
+		t.Errorf("network[0] ipv6/vmq = %v", n0)
+	}
 	if n1 := network[1].(map[string]any); n1["connected"] != false {
 		t.Errorf("network[1].connected should be false, got %v", n1["connected"])
+	}
+	if n1 := network[1].(map[string]any); n1["ipv6Enabled"] != nil || n1["vmqEnabled"] != nil {
+		t.Errorf("network[1] unknown ipv6/vmq must be omitted, got %v", n1)
 	}
 	vsw, ok := got["vSwitches"].([]any)
 	if !ok || len(vsw) != 1 {

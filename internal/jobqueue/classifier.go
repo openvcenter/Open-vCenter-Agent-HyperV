@@ -16,7 +16,7 @@ const (
 func Classify(job *jobstore.JobRecord) JobClass {
 	switch job.TaskType {
 	case "vm_inventory", "hardware_inventory", "vm_status",
-		"template_inventory", "iso_inventory", "agent_status":
+		"template_inventory", "iso_inventory", "host_settings", "agent_status":
 		return ClassRead
 
 	case "host_management":

@@ -28,7 +28,7 @@ func executeTask(ctx context.Context, cfg *config.Config, job *jobstore.JobRecor
 		cfg.AdditionalVMStorage,
 		logger,
 	)
-	dispatcher.SetRefreshIntervals(cfg.RefreshIntervalVMs, cfg.RefreshIntervalHost)
+	dispatcher.SetRefreshIntervals(cfg.RefreshIntervalVMs, cfg.RefreshIntervalHost, cfg.MetricsInterval)
 
 	// publishState converts an inventory refresh TaskResponse into the backend's
 	// last-value queue payload and publishes it.

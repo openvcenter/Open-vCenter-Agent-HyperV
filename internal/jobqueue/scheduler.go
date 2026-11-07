@@ -32,9 +32,10 @@ const defaultHeartbeatInterval = 60 * time.Second
 
 // SchedulerConfig holds the interval and delay settings for periodic refresh scheduling.
 type SchedulerConfig struct {
-	RefreshIntervalVMs  time.Duration // interval for vm_inventory (0 means disabled)
-	RefreshIntervalHost time.Duration // interval for hardware_inventory, template_inventory, iso_inventory (0 means disabled)
-	HeartbeatInterval   time.Duration // interval for agent_status; always on (<=0 uses defaultHeartbeatInterval)
+	RefreshIntervalVMs      time.Duration // interval for vm_inventory (0 means disabled)
+	RefreshIntervalHost     time.Duration // interval for hardware_inventory, template_inventory, iso_inventory (0 means disabled)
+	HeartbeatInterval       time.Duration // interval for agent_status; always on (<=0 uses defaultHeartbeatInterval)
+	RefreshIntervalSettings time.Duration // interval for host_settings (0 means disabled)
 }
 
 // Scheduler creates periodic refresh jobs in the job store following configured intervals
@@ -78,6 +79,7 @@ func (s *Scheduler) buildSpecs() []refreshSpec {
 		{taskType: "hardware_inventory", interval: s.config.RefreshIntervalHost, delay: 30 * time.Second},
 		{taskType: "template_inventory", interval: s.config.RefreshIntervalHost, delay: 60 * time.Second},
 		{taskType: "iso_inventory", interval: s.config.RefreshIntervalHost, delay: 90 * time.Second},
+		{taskType: "host_settings", interval: s.config.RefreshIntervalSettings, delay: 120 * time.Second},
 		{taskType: "agent_status", interval: heartbeat, delay: 15 * time.Second},
 	}
 }

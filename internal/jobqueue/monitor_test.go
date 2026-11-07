@@ -281,6 +281,7 @@ func TestMonitor_GetTimeoutForTask(t *testing.T) {
 		{"vm_clone", "vm_clone", "", 1800 * time.Second},
 		{"vm_inventory", "vm_inventory", "", 600 * time.Second},
 		{"iso_inventory", "iso_inventory", "", 300 * time.Second},
+		{"host_settings", "host_settings", "", 120 * time.Second},
 		{"artifact_download", "artifact_download", "", 3600 * time.Second},
 		{"vm_management vm_batch_start", "vm_management", "vm_batch_start", 1800 * time.Second},
 		{"vm_management vm_batch_stop", "vm_management", "vm_batch_stop", 1800 * time.Second},

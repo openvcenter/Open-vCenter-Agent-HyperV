@@ -134,7 +134,7 @@ func (s *Sampler) flush(ctx context.Context, win *window, topo *Topology, end ti
 		return
 	}
 	reportedAt := end.UTC().Format(time.RFC3339Nano)
-	if err := s.publish(ctx, "host_metrics", win.hostPayload(reportedAt)); err != nil {
+	if err := s.publish(ctx, "host_metrics", win.hostPayload(reportedAt, topo)); err != nil {
 		s.logger.Warn("metrics: host_metrics not published", "error", err)
 	}
 	if err := s.publish(ctx, "vm_metrics", win.vmPayload(reportedAt, topo)); err != nil {

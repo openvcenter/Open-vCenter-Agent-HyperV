@@ -28,6 +28,7 @@ type Topology struct {
 	diskByKey  map[string]TopoDisk // normalized path -> disk
 	diskByFile map[string][]TopoDisk
 	vmByGUID   map[string]string // lowercase VM or adapter GUID -> VM id
+	volumes    map[string]string // volume key (see volumeKey) -> label / CSV name
 }
 
 type TopoVM struct {
@@ -39,6 +40,13 @@ type TopoVM struct {
 type TopoDisk struct {
 	VMID string `json:"vmId"`
 	Path string `json:"path"`
+}
+
+// TopoVolume names a host volume: a drive letter ("C:") with its label, or a
+// CSV mount path with the CSV name.
+type TopoVolume struct {
+	Path  string `json:"path"`
+	Label string `json:"label"`
 }
 
 type TopoNIC struct {
@@ -80,6 +88,20 @@ func NewTopology(vms []TopoVM, disks []TopoDisk, nics []TopoNIC) *Topology {
 		}
 	}
 	return t
+}
+
+// volumeKey matches a LogicalDisk instance to a TopoVolume path.
+func volumeKey(p string) string {
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(p), `\`))
+}
+
+// VolumeLabel returns the label of a LogicalDisk instance ("C:",
+// "C:\ClusterStorage\Volume1"), or "" when it has none. Safe on a nil Topology.
+func (t *Topology) VolumeLabel(instance string) string {
+	if t == nil {
+		return ""
+	}
+	return t.volumes[volumeKey(instance)]
 }
 
 // VM returns the topology entry for a VM id.
@@ -158,15 +180,21 @@ func fileName(p string) string {
 	return path.Base(strings.ReplaceAll(p, `\`, "/"))
 }
 
-// topologyScript lists the VMs, their disks and their network adapters in one
-// PowerShell call. It runs every topologyRefresh, never on the sampling path.
+// topologyScript lists the VMs, their disks and their network adapters, plus
+// the host volume labels and CSV names, in one PowerShell call. It runs every
+// topologyRefresh, never on the sampling path.
 const topologyScript = `
 $ErrorActionPreference = 'SilentlyContinue'
 $vms = @(Get-VM)
+$volumes = @(Get-Volume | Where-Object { $_.DriveLetter -and $_.FileSystemLabel } | ForEach-Object { [pscustomobject]@{ path = "$($_.DriveLetter):"; label = $_.FileSystemLabel } })
+try {
+    $volumes += @(Get-ClusterSharedVolume -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ path = "$(@($_.SharedVolumeInfo)[0].FriendlyVolumeName)"; label = $_.Name } })
+} catch {}
 [pscustomobject]@{
     vms   = @($vms | ForEach-Object { [pscustomobject]@{ id = "$($_.Id)"; name = $_.Name; memoryAssigned = [double]$_.MemoryAssigned } })
     disks = @($vms | Get-VMHardDiskDrive | ForEach-Object { [pscustomobject]@{ vmId = "$($_.VMId)"; path = "$($_.Path)" } })
     nics  = @($vms | Get-VMNetworkAdapter | ForEach-Object { [pscustomobject]@{ vmId = "$($_.VMId)"; id = "$($_.Id)" } })
+    volumes = $volumes
 } | ConvertTo-Json -Depth 4 -Compress
 `
 
@@ -178,17 +206,19 @@ func FetchTopology(ctx context.Context) (*Topology, error) {
 	}
 	out = bytes.TrimSpace(bytes.TrimPrefix(out, []byte("\xef\xbb\xbf")))
 	var raw struct {
-		VMs   json.RawMessage `json:"vms"`
-		Disks json.RawMessage `json:"disks"`
-		NICs  json.RawMessage `json:"nics"`
+		VMs     json.RawMessage `json:"vms"`
+		Disks   json.RawMessage `json:"disks"`
+		NICs    json.RawMessage `json:"nics"`
+		Volumes json.RawMessage `json:"volumes"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("parse topology: %w", err)
 	}
 	var (
-		vms   []TopoVM
-		disks []TopoDisk
-		nics  []TopoNIC
+		vms     []TopoVM
+		disks   []TopoDisk
+		nics    []TopoNIC
+		volumes []TopoVolume
 	)
 	if err := decodeList(raw.VMs, &vms); err != nil {
 		return nil, fmt.Errorf("parse topology vms: %w", err)
@@ -199,7 +229,17 @@ func FetchTopology(ctx context.Context) (*Topology, error) {
 	if err := decodeList(raw.NICs, &nics); err != nil {
 		return nil, fmt.Errorf("parse topology nics: %w", err)
 	}
-	return NewTopology(vms, disks, nics), nil
+	if err := decodeList(raw.Volumes, &volumes); err != nil {
+		return nil, fmt.Errorf("parse topology volumes: %w", err)
+	}
+	t := NewTopology(vms, disks, nics)
+	t.volumes = make(map[string]string, len(volumes))
+	for _, v := range volumes {
+		if v.Path != "" && v.Label != "" {
+			t.volumes[volumeKey(v.Path)] = v.Label
+		}
+	}
+	return t, nil
 }
 
 // decodeList accepts a JSON array, a single object (PowerShell unwraps

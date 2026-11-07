@@ -67,6 +67,8 @@ type hwNIC struct {
 	DriverDate      string `json:"driverDate,omitempty"`
 	DriverProvider  string `json:"driverProvider,omitempty"`
 	FirmwareVersion string `json:"firmwareVersion,omitempty"`
+	IPv6Enabled     *bool  `json:"ipv6Enabled,omitempty"`
+	VMQEnabled      *bool  `json:"vmqEnabled,omitempty"`
 }
 
 type hwVSwitch struct {
@@ -141,6 +143,8 @@ func (r *HardwareInventoryResult) MarshalJSON() ([]byte, error) {
 			DriverDate:      n.DriverDate,
 			DriverProvider:  n.DriverProvider,
 			FirmwareVersion: n.FirmwareVersion,
+			IPv6Enabled:     n.IPv6Enabled,
+			VMQEnabled:      n.VMQEnabled,
 		})
 	}
 	vSwitches := make([]hwVSwitch, 0, len(r.VSwitches))

@@ -25,6 +25,7 @@ const (
 	TaskHostManagement    TaskType = "host_management"
 	TaskTemplateInventory TaskType = "template_inventory"
 	TaskISOInventory      TaskType = "iso_inventory"
+	TaskHostSettings      TaskType = "host_settings"
 
 	// TaskAgentUpgrade is the internal task type for the agent self-upgrade
 	// (wire function "host_update_agent"). The string value is kept as
@@ -210,6 +211,7 @@ type Dispatcher struct {
 	additionalStorage    []string
 	vmRefreshInterval    int
 	hostRefreshInterval  int
+	metricsInterval      int
 	cluster              ClusterInfo
 	onVMStateChange      PostActionPublisher
 	onProgress           ProgressPublisher
@@ -230,11 +232,12 @@ func NewDispatcher(hostID string, taskTimeout time.Duration, templatePath string
 	}
 }
 
-// SetRefreshIntervals records the configured periodic-refresh intervals so they
-// can be reported in agent_status.
-func (d *Dispatcher) SetRefreshIntervals(vmSeconds, hostSeconds int) {
+// SetRefreshIntervals records the configured periodic-refresh and metrics
+// intervals so they can be reported in agent_status.
+func (d *Dispatcher) SetRefreshIntervals(vmSeconds, hostSeconds, metricsSeconds int) {
 	d.vmRefreshInterval = vmSeconds
 	d.hostRefreshInterval = hostSeconds
+	d.metricsInterval = metricsSeconds
 }
 
 // GetHostID returns the host ID configured for this dispatcher.
@@ -449,6 +452,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, msg *TaskMessage) *TaskRespon
 			result, taskErr = d.handleTemplateInventory(taskCtx)
 		case TaskISOInventory:
 			result, taskErr = d.handleISOInventory(taskCtx)
+		case TaskHostSettings:
+			result, taskErr = d.handleHostSettings(taskCtx)
 		case TaskAgentUpgrade:
 			// The agent self-upgrade runs asynchronously in a goroutine so it
 			// doesn't block task consumption. It publishes its own progress and

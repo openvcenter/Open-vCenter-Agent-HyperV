@@ -94,6 +94,11 @@ type HostInventoryPayload struct {
 	Hardware   any    `json:"hardware"`
 }
 
+type SettingsInventoryPayload struct {
+	ReportedAt string `json:"reported_at"`
+	Settings   any    `json:"settings"`
+}
+
 type ImageInventoryPayload struct {
 	ReportedAt string `json:"reported_at"`
 	Items      any    `json:"items"`
@@ -126,7 +131,10 @@ type HostMetricsPayload struct {
 }
 
 type HostDiskStats struct {
-	Name           string   `json:"name"`
+	Name string `json:"name"`
+	// Label is the volume label (C: -> "SYSTEM") or, for a CSV mount path,
+	// the cluster's CSV name. Omitted when the volume has none.
+	Label          string   `json:"label,omitempty"`
 	ReadBps        *float64 `json:"readBps"`
 	WriteBps       *float64 `json:"writeBps"`
 	ReadIops       *float64 `json:"readIops"`

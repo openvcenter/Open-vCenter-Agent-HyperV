@@ -1,6 +1,7 @@
 package perf
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -41,7 +42,7 @@ type window struct {
 	start   time.Time
 	samples int
 	accs    map[string]*acc
-	disks   map[string]bool            // physical disk instances
+	disks   map[string]bool            // volume instances
 	nics    map[string]bool            // network interface instances
 	vms     map[string]bool            // VM ids seen running
 	vmDisks map[string]map[string]bool // VM id -> VHD paths
@@ -88,7 +89,7 @@ func (w *window) peak(key string) *float64 {
 	return &v
 }
 
-// hostDiskFields maps PhysicalDisk counters to payload fields and unit conversions.
+// hostDiskFields maps LogicalDisk counters to payload fields and unit conversions.
 var hostDiskFields = []struct {
 	counter, field string
 	conv           func(float64) float64
@@ -113,6 +114,10 @@ var vmDiskFields = []struct{ counter, field string }{
 }
 
 func secToMs(v float64) float64 { return v * 1000 }
+
+// unnamedVolume matches LogicalDisk instances of volumes without a drive letter
+// or mount path.
+var unnamedVolume = regexp.MustCompile(`^HarddiskVolume\d+$`)
 
 func clamp(v, lo, hi float64) float64 {
 	if v < lo {
@@ -157,6 +162,9 @@ func (w *window) addHost(s *Sample) {
 			if inst == totalInstance {
 				w.put(k("host.disk", f.field), v)
 				continue
+			}
+			if unnamedVolume.MatchString(inst) {
+				continue // EFI / recovery partition: only in the total
 			}
 			w.disks[inst] = true
 			w.put(k("disk", inst, f.field), v)
@@ -341,7 +349,7 @@ func (w *window) addVMs(s *Sample, topo *Topology) (unmatched map[string]bool) {
 }
 
 // hostPayload builds the <hostid>.host_metrics message for this window.
-func (w *window) hostPayload(reportedAt string) protocol.HostMetricsPayload {
+func (w *window) hostPayload(reportedAt string, topo *Topology) protocol.HostMetricsPayload {
 	p := protocol.HostMetricsPayload{
 		ReportedAt:         reportedAt,
 		CPUPercent:         w.mean("host.cpu"),
@@ -364,6 +372,7 @@ func (w *window) hostPayload(reportedAt string) protocol.HostMetricsPayload {
 	for _, name := range sortedKeys(w.disks) {
 		p.Disks = append(p.Disks, protocol.HostDiskStats{
 			Name:           name,
+			Label:          topo.VolumeLabel(name),
 			ReadBps:        w.mean(k("disk", name, "readBps")),
 			WriteBps:       w.mean(k("disk", name, "writeBps")),
 			ReadIops:       w.mean(k("disk", name, "readIops")),

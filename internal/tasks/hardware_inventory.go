@@ -61,6 +61,8 @@ type NetAdapterInfo struct {
 	DriverDate      string `json:"driverDate"`
 	DriverProvider  string `json:"driverProvider"`
 	FirmwareVersion string `json:"firmwareVersion"`
+	IPv6Enabled     *bool  `json:"ipv6Enabled"` // nil = no IPv6 binding found
+	VMQEnabled      *bool  `json:"vmqEnabled"`  // nil = VMQ not supported by the adapter
 }
 
 // VSwitchInfo is one Hyper-V virtual switch.
@@ -230,6 +232,11 @@ if ($isCluster) {
 }
 
 # Physical NICs - every adapter, connected or not. Speed in bits/sec.
+# IPv6 binding and VMQ are queried once for all adapters, keyed by name.
+$ipv6ByName = @{}
+try { foreach ($b in @(Get-NetAdapterBinding -ComponentID ms_tcpip6 -ErrorAction Stop)) { $ipv6ByName[$b.Name] = [bool]$b.Enabled } } catch {}
+$vmqByName = @{}
+try { foreach ($q in @(Get-NetAdapterVmq -ErrorAction Stop)) { $vmqByName[$q.Name] = [bool]$q.Enabled } } catch {}
 $netAdapters = @()
 try {
     foreach ($na in @(Get-NetAdapter -Physical -ErrorAction Stop)) {
@@ -252,6 +259,8 @@ try {
             driverDate      = $dDate
             driverProvider  = [string]$na.DriverProvider
             firmwareVersion = $fw
+            ipv6Enabled     = $ipv6ByName[$na.Name]
+            vmqEnabled      = $vmqByName[$na.Name]
         }
     }
 } catch {}

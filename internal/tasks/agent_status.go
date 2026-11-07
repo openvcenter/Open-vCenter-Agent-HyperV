@@ -8,13 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"ovc-agent/internal/config"
 	"ovc-agent/internal/hyperv"
 	"ovc-agent/internal/perf"
 	"ovc-agent/internal/protocol"
 )
 
-const AgentVersion = "1.0.9"
+const AgentVersion = "1.0.10"
 
 // Hypervisor / AgentType identify this build in the agent_status payload so the
 // backend can set Host.hypervisor (see ovc-backend LLM.md).
@@ -83,9 +82,7 @@ func (d *Dispatcher) handleAgentStatus(ctx context.Context) (*AgentStatusResult,
 		AgentType:           AgentType,
 		VMRefreshInterval:   d.vmRefreshInterval,
 		HostRefreshInterval: d.hostRefreshInterval,
-		// The sampler runs in the service process; this may run in a worker,
-		// so read the interval the service saved.
-		MetricsInterval: perf.LoadInterval(config.AgentDir()),
+		MetricsInterval:     perf.ValidInterval(d.metricsInterval),
 	}
 
 	// If this node is part of a cluster, check whether the service runs under a domain account.

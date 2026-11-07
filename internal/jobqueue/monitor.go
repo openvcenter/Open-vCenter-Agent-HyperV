@@ -251,6 +251,7 @@ var taskTimeouts = map[string]time.Duration{
 	"hardware_inventory": 600 * time.Second,
 	"template_inventory": 600 * time.Second,
 	"iso_inventory":      300 * time.Second,
+	"host_settings":      120 * time.Second,
 	"artifact_download":  3600 * time.Second,
 }
 

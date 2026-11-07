@@ -12,7 +12,7 @@ contract.
 ```
 cmd/agent/main.go            entrypoint, service registration, consume loop, schedulers
 internal/
-├── config/                  reads config.ini (next to the binary)
+├── config/                  reads config.ini + config.backend.ini (next to the binary)
 ├── preflight/               validates the Hyper-V role at startup
 ├── protocol/                AgentRequest / AgentResponse / *Payload (mirrors protocol.py)
 ├── rabbitmq/                connection (reconnect), consumer (<hostid>.request), publisher
@@ -33,8 +33,10 @@ The agent has **no fixed installation folder**: the folder where the binary live
 the "default" folder. `config.ini`, `agent.log`, `jobs.db` and the upgrade binaries
 all sit next to `ovc-agent.exe`.
 
-Configuration is read **exclusively from `config.ini`** (no registry, no environment
-variables).
+Configuration is read from `config.ini` (no registry, no environment variables),
+then from `config.backend.ini` next to it. The agent writes that second file with
+the settings the backend pushes (today `metrics_interval`), and its values win
+over `config.ini`. Don't edit it by hand.
 
 ### `config.ini` (next to the binary)
 
@@ -47,9 +49,13 @@ log_level = info
 task_timeout = 60
 refresh_interval_vms = 180
 refresh_interval_host = 600
+; host settings (power plan, core isolation, page file, live migration...); 0 = off
+refresh_interval_settings = 1800
 ; liveness heartbeat (agent_status); independent of refresh_interval_host,
 ; must stay below the backend's agent_offline_after_seconds (120s). Optional.
 heartbeat_interval = 60
+; metrics collection window; replaced by the backend's setting
+metrics_interval = 300
 template_path = D:\HyperV\TEMPLATES
 local_iso_path = D:\HyperV\ISOS
 aditional_vm_storage = E:\HyperV

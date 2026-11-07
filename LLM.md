@@ -30,6 +30,7 @@ All code, comments, identifiers, commit messages, docs and log strings are in
 - `<hostid>.host_inventory` - last-value (hardware)
 - `<hostid>.template_inventory` - last-value
 - `<hostid>.iso_inventory` - last-value
+- `<hostid>.settings_inventory` - last-value (host settings)
 
 Last-value queues: `x-max-length=1`, `x-overflow=drop-head`.
 
@@ -107,8 +108,18 @@ itself in.
 ## Periodic publications
 
 `agent_status`, `vm_inventory`, `host_hwinventory` (-> host_inventory),
-`template_inventory`, `iso_inventory`. Configurable intervals
-(`refresh_interval_vms`, `refresh_interval_host`).
+`template_inventory`, `iso_inventory`, `host_settings` (-> settings_inventory).
+Configurable intervals (`refresh_interval_vms`, `refresh_interval_host`,
+`refresh_interval_settings`).
+
+`host_settings` (`internal/tasks/host_settings.go`, every 30 min by default)
+reports host configuration values as-is, no pass/fail: power plan (powrprof.dll),
+core isolation VBS/HVCI, page files, Wireless LAN service, host-wide IPv6
+`DisabledComponents` (registry, `internal/hostinfo/settings_windows.go`), and
+NUMA spanning / enhanced session mode / live migration settings (one `Get-VMHost`).
+Each block is best-effort and omitted when it cannot be read. Per-NIC IPv6 binding
+and VMQ (`ipv6Enabled` / `vmqEnabled`, omitted when unknown) are in the
+`host_inventory` NICs instead.
 
 `agent_status` is the liveness heartbeat: it runs on its own short interval
 (`heartbeat_interval`, default 60s), NOT on `refresh_interval_host`. The backend
@@ -142,7 +153,10 @@ host vNIC) are ignored until the next one:
 
 - host: CPU from `Hyper-V Hypervisor Logical Processor(_Total)` (the `Processor`
   sets only see the root partition), memory from `GlobalMemoryStatusEx`, disks
-  from `PhysicalDisk(*)`, network from `Network Interface(*)`.
+  per volume from `LogicalDisk(*)` (C:, D:, CSV paths; unlettered volumes only
+  count in the total) with a `label` (the volume label, or the CSV name for a
+  CSV path; from the topology script's `Get-Volume` / `Get-ClusterSharedVolume`),
+  network from `Network Interface(*)`.
 - VMs (every running VM): CPU from `Hyper-V Hypervisor Virtual Processor`
   (`<vm>:Hv VP <n>`, by name), memory from `Hyper-V Dynamic Memory VM` (by name;
   falls back to `MemoryAssigned`), disks from `Hyper-V Virtual Storage Device`
@@ -151,8 +165,8 @@ host vNIC) are ignored until the next one:
 
 The collection interval comes from the backend's Application Preferences: the
 `set_metrics_config` request (`params: {interval_seconds}`) is handled directly
-by the service loop (no job, no `AgentResponse`), saved to `metrics_interval`
-next to the binary and reported back as `metrics_interval` in `agent_status`.
+by the service loop (no job, no `AgentResponse`), saved as `metrics_interval` in
+`config.backend.ini` and reported back as `metrics_interval` in `agent_status`.
 Default 300 s until the backend sends one.
 
 `vm_inventory` also carries, per VM, two best-effort fields that are omitted when
@@ -180,7 +194,10 @@ in the binary's folder and exits.
 
 The agent has NO fixed install folder: the binary's folder is the default folder
 (`config.ini`, `agent.log`, `jobs.db`, and upgrade binaries all live there).
-Config is read ONLY from `config.ini` (no registry, no env). Example:
+Config is read from `config.ini` (no registry, no env), then overlaid by
+`config.backend.ini` (same folder, same `[agent]` keys, wins over `config.ini`):
+settings the backend pushed, written by the agent via `config.SaveBackendValue`
+(atomic replace). A missing or unreadable `config.backend.ini` is ignored. Example:
 
 ```ini
 [agent]
@@ -189,7 +206,9 @@ rabbitmq_url = amqp://user:password@rabbit:5672/
 log_level = info
 refresh_interval_vms = 180
 refresh_interval_host = 600
+refresh_interval_settings = 1800
 heartbeat_interval = 60
+metrics_interval = 300
 template_path = D:\HyperV\TEMPLATES
 local_iso_path = D:\HyperV\ISOS
 aditional_vm_storage = E:\HyperV

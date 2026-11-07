@@ -13,6 +13,7 @@ import "ovc-agent/internal/protocol"
 //	                       re-marshals itself, see marshal_hardware.go)
 //	template_inventory  -> <hostid>.template_inventory { reported_at, items }
 //	iso_inventory       -> <hostid>.iso_inventory   { reported_at, items }
+//	host_settings       -> <hostid>.settings_inventory { reported_at, settings }
 func StatePayload(taskType TaskType, result interface{}) (kind string, payload interface{}, ok bool) {
 	now := protocol.Now()
 
@@ -41,6 +42,8 @@ func StatePayload(taskType TaskType, result interface{}) (kind string, payload i
 			items = r.Items
 		}
 		return "iso_inventory", protocol.ImageInventoryPayload{ReportedAt: now, Items: items}, true
+	case TaskHostSettings:
+		return "settings_inventory", protocol.SettingsInventoryPayload{ReportedAt: now, Settings: result}, true
 	}
 
 	return "", nil, false

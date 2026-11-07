@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 	"unsafe"
@@ -206,7 +207,7 @@ func runAgent(ctx context.Context) error {
 
 	// Declare the last-value inventory queues (x-max-length=1), matching
 	// ovc-backend's queues.py layout.
-	for _, kind := range []string{"agent_status", "vm_inventory", "host_inventory", "template_inventory", "iso_inventory"} {
+	for _, kind := range []string{"agent_status", "vm_inventory", "host_inventory", "template_inventory", "iso_inventory", "settings_inventory"} {
 		if err := publisher.DeclareStateQueue(cfg.StateQueue(kind)); err != nil {
 			return fmt.Errorf("failed to declare state queue '%s': %v", kind, err)
 		}
@@ -287,9 +288,10 @@ func runAgent(ctx context.Context) error {
 	})
 
 	schedulerCfg := jobqueue.SchedulerConfig{
-		RefreshIntervalVMs:  time.Duration(cfg.RefreshIntervalVMs) * time.Second,
-		RefreshIntervalHost: time.Duration(cfg.RefreshIntervalHost) * time.Second,
-		HeartbeatInterval:   time.Duration(cfg.HeartbeatInterval) * time.Second,
+		RefreshIntervalVMs:      time.Duration(cfg.RefreshIntervalVMs) * time.Second,
+		RefreshIntervalHost:     time.Duration(cfg.RefreshIntervalHost) * time.Second,
+		HeartbeatInterval:       time.Duration(cfg.HeartbeatInterval) * time.Second,
+		RefreshIntervalSettings: time.Duration(cfg.RefreshIntervalSettings) * time.Second,
 	}
 	scheduler := jobqueue.NewScheduler(store, schedulerCfg, logger, queueDispatcher.TriggerEvaluation)
 
@@ -315,7 +317,7 @@ func runAgent(ctx context.Context) error {
 	if src, err := perf.NewSource(); err != nil {
 		logger.Error("metrics sampler disabled: performance counters unavailable", "error", err)
 	} else {
-		sampler = perf.NewSampler(src, perf.LoadInterval(config.AgentDir()),
+		sampler = perf.NewSampler(src, cfg.MetricsInterval,
 			func(ctx context.Context, kind string, payload any) error {
 				return publisher.PublishConfirmed(ctx, cfg.StateQueue(kind), payload)
 			}, logger)
@@ -324,7 +326,7 @@ func runAgent(ctx context.Context) error {
 
 	// Create a minimal task dispatcher for the synchronous startup agent_status
 	startupDispatcher := tasks.NewDispatcher(cfg.HostID, taskTimeout, cfg.TemplatePath, cfg.LocalISOPath, cfg.AdditionalVMStorage, logger)
-	startupDispatcher.SetRefreshIntervals(cfg.RefreshIntervalVMs, cfg.RefreshIntervalHost)
+	startupDispatcher.SetRefreshIntervals(cfg.RefreshIntervalVMs, cfg.RefreshIntervalHost, cfg.MetricsInterval)
 	startupDispatcher.DetectCluster(ctx)
 
 	// Check for pending upgrade response (written by the previous agent before upgrade).
@@ -377,7 +379,7 @@ func runAgent(ctx context.Context) error {
 		if err := publisher.DeclareQueue(); err != nil {
 			logger.Error("failed to re-declare response queue", "error", err)
 		}
-		for _, kind := range []string{"agent_status", "vm_inventory", "host_inventory", "template_inventory", "iso_inventory"} {
+		for _, kind := range []string{"agent_status", "vm_inventory", "host_inventory", "template_inventory", "iso_inventory", "settings_inventory"} {
 			if err := publisher.DeclareStateQueue(cfg.StateQueue(kind)); err != nil {
 				logger.Error("failed to re-declare state queue", "kind", kind, "error", err)
 			}
@@ -494,8 +496,9 @@ func runAgent(ctx context.Context) error {
 	}
 }
 
-// applyMetricsConfig handles set_metrics_config: it saves the interval (so
-// agent_status reports it and a restart keeps it) and retimes the sampler.
+// applyMetricsConfig handles set_metrics_config: it saves the interval to
+// config.backend.ini (so agent_status, run by workers that reload the config,
+// reports it and a restart keeps it) and retimes the sampler.
 func applyMetricsConfig(params json.RawMessage, sampler *perf.Sampler, logger *slog.Logger) {
 	var p protocol.MetricsConfigParams
 	if err := json.Unmarshal(params, &p); err != nil || p.IntervalSeconds <= 0 {
@@ -503,7 +506,7 @@ func applyMetricsConfig(params json.RawMessage, sampler *perf.Sampler, logger *s
 		return
 	}
 	interval := perf.ValidInterval(p.IntervalSeconds)
-	if err := perf.SaveInterval(config.AgentDir(), interval); err != nil {
+	if err := config.SaveBackendValue(config.AgentDir(), "metrics_interval", strconv.Itoa(interval)); err != nil {
 		logger.Error("failed to save metrics interval", "error", err)
 	}
 	if sampler != nil {

@@ -90,10 +90,10 @@ func sample(cpu, diskRead, vpA0, vpA1 float64) *Sample {
 		Counters: map[string]map[string]float64{
 			cHypervisorCPU: {"_Total": cpu},
 			cProcTime:      {"_Total": 1},
-			cDiskReadBps:   {"_Total": diskRead, "0 C:": diskRead},
-			cDiskReadLat:   {"_Total": 0.002, "0 C:": 0.002},
-			cDiskWriteLat:  {"_Total": 0.004, "0 C:": 0.004},
-			cDiskIdle:      {"_Total": 80, "0 C:": 80},
+			cDiskReadBps:   {"_Total": diskRead, "C:": diskRead, "HarddiskVolume1": 0},
+			cDiskReadLat:   {"_Total": 0.002, "C:": 0.002},
+			cDiskWriteLat:  {"_Total": 0.004, "C:": 0.004},
+			cDiskIdle:      {"_Total": 80, "C:": 80},
 			cNetRx:         {"nic1": 100, "nic2": 50},
 			cVPGuestRun:    {"web-01:Hv VP 0": vpA0, "web-01:Hv VP 1": vpA1, "_Total": 99, "new-vm:Hv VP 0": 5},
 			cVMMemory:      {"web-01": 2048},
@@ -135,7 +135,8 @@ func TestWindowAggregation(t *testing.T) {
 	}
 	w.add(sample(30, 300, 60, 80), topo)
 
-	h := w.hostPayload("now")
+	topo.volumes = map[string]string{volumeKey("C:"): "SYSTEM"}
+	h := w.hostPayload("now", topo)
 	approx(t, "cpuPercent", h.CPUPercent, 20)
 	approx(t, "cpuMaxPercent", h.CPUMaxPercent, 30)
 	approx(t, "memPercent", h.MemPercent, 75)
@@ -146,7 +147,7 @@ func TestWindowAggregation(t *testing.T) {
 	if h.DiskWriteBps != nil {
 		t.Error("a counter that was never read must stay nil")
 	}
-	if len(h.Disks) != 1 || h.Disks[0].Name != "0 C:" {
+	if len(h.Disks) != 1 || h.Disks[0].Name != "C:" || h.Disks[0].Label != "SYSTEM" {
 		t.Fatalf("disks = %+v", h.Disks)
 	}
 	approx(t, "disk busyPercent", h.Disks[0].BusyPercent, 20)
@@ -182,6 +183,26 @@ func TestWindowAggregation(t *testing.T) {
 	}
 }
 
+func TestVolumeLabel(t *testing.T) {
+	topo := NewTopology(nil, nil, nil)
+	topo.volumes = map[string]string{
+		volumeKey("D:"):                         "VMs",
+		volumeKey(`C:\ClusterStorage\Volume1\`): "CSV-Prod",
+	}
+	for instance, want := range map[string]string{
+		"d:":                        "VMs",
+		`C:\ClusterStorage\volume1`: "CSV-Prod",
+		"C:":                        "",
+	} {
+		if got := topo.VolumeLabel(instance); got != want {
+			t.Errorf("VolumeLabel(%q) = %q, want %q", instance, got, want)
+		}
+	}
+	if (*Topology)(nil).VolumeLabel("C:") != "" {
+		t.Error("nil topology must have no labels")
+	}
+}
+
 func TestHostCPUFallback(t *testing.T) {
 	s := &Sample{Counters: map[string]map[string]float64{cProcUtility: {"_Total": 130}}}
 	if v, ok := hostCPU(s); !ok || v != 100 {
@@ -189,17 +210,7 @@ func TestHostCPUFallback(t *testing.T) {
 	}
 }
 
-func TestIntervalFile(t *testing.T) {
-	dir := t.TempDir()
-	if got := LoadInterval(dir); got != DefaultInterval {
-		t.Errorf("missing file = %d", got)
-	}
-	if err := SaveInterval(dir, 60); err != nil {
-		t.Fatal(err)
-	}
-	if got := LoadInterval(dir); got != 60 {
-		t.Errorf("LoadInterval = %d", got)
-	}
+func TestValidInterval(t *testing.T) {
 	if ValidInterval(1) != minInterval || ValidInterval(99999) != maxInterval || ValidInterval(0) != DefaultInterval {
 		t.Error("ValidInterval bounds")
 	}

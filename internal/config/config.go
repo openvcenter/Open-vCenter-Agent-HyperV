@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	DefaultLogLevel            = "info"
-	DefaultTaskTimeout         = 60
-	DefaultRefreshIntervalVMs  = 300 // 5 minutes
-	DefaultRefreshIntervalHost = 600 // 10 minutes
-	DefaultMaxConcurrentJobs   = 4
+	DefaultLogLevel                = "info"
+	DefaultTaskTimeout             = 60
+	DefaultRefreshIntervalVMs      = 300  // 5 minutes
+	DefaultRefreshIntervalHost     = 600  // 10 minutes
+	DefaultRefreshIntervalSettings = 1800 // 30 minutes
+	DefaultMaxConcurrentJobs       = 4
 
 	// DefaultHeartbeatInterval is how often the agent republishes agent_status.
 	// It is independent of refresh_interval_host: the backend marks a host
@@ -25,10 +26,12 @@ const (
 	// the host shown as online.
 	DefaultHeartbeatInterval = 60 // 1 minute
 
-	// ConfigFileName / LogFileName / JobStoreFileName live in AgentDir().
-	ConfigFileName   = "config.ini"
-	LogFileName      = "agent.log"
-	JobStoreFileName = "jobs.db"
+	// ConfigFileName / BackendConfigFileName / LogFileName / JobStoreFileName
+	// live in AgentDir().
+	ConfigFileName        = "config.ini"
+	BackendConfigFileName = "config.backend.ini"
+	LogFileName           = "agent.log"
+	JobStoreFileName      = "jobs.db"
 )
 
 // AgentDir returns the directory the agent binary lives in. Every agent file
@@ -58,32 +61,36 @@ func DefaultLogFile() string { return filepath.Join(AgentDir(), LogFileName) }
 // JobStorePath is <AgentDir>/jobs.db.
 func JobStorePath() string { return filepath.Join(AgentDir(), JobStoreFileName) }
 
-// Config holds the agent configuration. It is read exclusively from config.ini
-// in AgentDir() (or an explicit path passed to Load).
+// Config holds the agent configuration. It is read from config.ini in AgentDir()
+// (or an explicit path passed to Load), then from config.backend.ini next to it:
+// the settings the backend pushed to this agent, which win over config.ini.
 type Config struct {
-	HostID              string
-	RabbitMQURL         string
-	LogLevel            string
-	LogFile             string
-	TaskTimeout         int
-	MaxConcurrentJobs   int      // max number of concurrent worker processes (1-64, default 4)
-	RefreshIntervalVMs  int      // seconds between automatic VM inventory pushes (0 = disabled)
-	RefreshIntervalHost int      // seconds between automatic host inventory pushes (0 = disabled)
-	HeartbeatInterval   int      // seconds between agent_status heartbeats (always on; <=0 falls back to default)
-	TemplatePath        string   // path where exported VM templates are stored
-	LocalISOPath        string   // path where ISO files are stored (optional)
-	AdditionalVMStorage []string // extra VM storage roots (normalized to end with "HyperV")
+	HostID                  string
+	RabbitMQURL             string
+	LogLevel                string
+	LogFile                 string
+	TaskTimeout             int
+	MaxConcurrentJobs       int      // max number of concurrent worker processes (1-64, default 4)
+	RefreshIntervalVMs      int      // seconds between automatic VM inventory pushes (0 = disabled)
+	RefreshIntervalHost     int      // seconds between automatic host inventory pushes (0 = disabled)
+	RefreshIntervalSettings int      // seconds between automatic host settings pushes (0 = disabled)
+	HeartbeatInterval       int      // seconds between agent_status heartbeats (always on; <=0 falls back to default)
+	MetricsInterval         int      // seconds per metrics collection window (0 = perf default; set by the backend)
+	TemplatePath            string   // path where exported VM templates are stored
+	LocalISOPath            string   // path where ISO files are stored (optional)
+	AdditionalVMStorage     []string // extra VM storage roots (normalized to end with "HyperV")
 }
 
 func newConfig() *Config {
 	return &Config{
-		LogLevel:            DefaultLogLevel,
-		LogFile:             DefaultLogFile(),
-		TaskTimeout:         DefaultTaskTimeout,
-		MaxConcurrentJobs:   DefaultMaxConcurrentJobs,
-		RefreshIntervalVMs:  DefaultRefreshIntervalVMs,
-		RefreshIntervalHost: DefaultRefreshIntervalHost,
-		HeartbeatInterval:   DefaultHeartbeatInterval,
+		LogLevel:                DefaultLogLevel,
+		LogFile:                 DefaultLogFile(),
+		TaskTimeout:             DefaultTaskTimeout,
+		MaxConcurrentJobs:       DefaultMaxConcurrentJobs,
+		RefreshIntervalVMs:      DefaultRefreshIntervalVMs,
+		RefreshIntervalHost:     DefaultRefreshIntervalHost,
+		RefreshIntervalSettings: DefaultRefreshIntervalSettings,
+		HeartbeatInterval:       DefaultHeartbeatInterval,
 	}
 }
 
@@ -95,7 +102,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	cfg := newConfig()
-	if err := cfg.loadFromINI(configPath); err != nil {
+	if err := cfg.load(configPath); err != nil {
 		return nil, err
 	}
 
@@ -132,7 +139,7 @@ func LoadForMessaging(configPath string) (*Config, error) {
 	}
 
 	cfg := newConfig()
-	if err := cfg.loadFromINI(configPath); err != nil {
+	if err := cfg.load(configPath); err != nil {
 		return nil, err
 	}
 
@@ -172,6 +179,41 @@ func (c *Config) validatePaths() error {
 	return nil
 }
 
+// load reads configPath, then overlays config.backend.ini from the same folder.
+// A missing backend file is normal (nothing pushed yet); an unreadable one is
+// ignored so a bad write never keeps the agent from starting.
+func (c *Config) load(configPath string) error {
+	if err := c.loadFromINI(configPath); err != nil {
+		return err
+	}
+	backendPath := filepath.Join(filepath.Dir(configPath), BackendConfigFileName)
+	if _, err := os.Stat(backendPath); err != nil {
+		return nil
+	}
+	if err := c.loadFromINI(backendPath); err != nil {
+		slog.Warn("ignoring backend config", "error", err)
+	}
+	return nil
+}
+
+// SaveBackendValue sets key in the [agent] section of config.backend.ini in dir,
+// keeping the other keys. The file is replaced atomically.
+func SaveBackendValue(dir, key, value string) error {
+	path := filepath.Join(dir, BackendConfigFileName)
+	f, err := ini.LooseLoad(path)
+	if err != nil {
+		return err
+	}
+	section := f.Section("agent")
+	section.Comment = "; Written by the agent from settings pushed by the backend; overrides config.ini."
+	section.Key(key).SetValue(value)
+	tmp := path + ".tmp"
+	if err := f.SaveTo(tmp); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func (c *Config) loadFromINI(path string) error {
 	f, err := ini.Load(path)
 	if err != nil {
@@ -201,8 +243,14 @@ func (c *Config) loadFromINI(path string) error {
 	if v, err := section.Key("refresh_interval_host").Int(); err == nil && v >= 0 {
 		c.RefreshIntervalHost = v
 	}
+	if v, err := section.Key("refresh_interval_settings").Int(); err == nil && v >= 0 {
+		c.RefreshIntervalSettings = v
+	}
 	if v, err := section.Key("heartbeat_interval").Int(); err == nil && v > 0 {
 		c.HeartbeatInterval = v
+	}
+	if v, err := section.Key("metrics_interval").Int(); err == nil && v > 0 {
+		c.MetricsInterval = v
 	}
 	if v := section.Key("template_path").String(); v != "" {
 		c.TemplatePath = v
@@ -238,7 +286,7 @@ func (c *Config) ResponseQueue() string {
 }
 
 // StateQueue returns the last-value queue for a given inventory kind
-// (agent_status | vm_inventory | host_inventory | template_inventory | iso_inventory).
+// (agent_status | vm_inventory | host_inventory | template_inventory | iso_inventory | settings_inventory).
 func (c *Config) StateQueue(kind string) string {
 	return fmt.Sprintf("%s.%s", c.HostID, kind)
 }

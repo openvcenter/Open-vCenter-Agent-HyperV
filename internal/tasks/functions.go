@@ -55,6 +55,8 @@ func ResolveFunction(fn string) (taskType TaskType, action string) {
 		return TaskTemplateInventory, ""
 	case fn == "iso_inventory":
 		return TaskISOInventory, ""
+	case fn == "host_settings":
+		return TaskHostSettings, ""
 	default:
 		return TaskType(fn), ""
 	}

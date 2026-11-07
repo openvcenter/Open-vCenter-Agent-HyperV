@@ -21,6 +21,7 @@ func TestClassify(t *testing.T) {
 		{"vm_status is Read", "vm_status", "", ClassRead},
 		{"template_inventory is Read", "template_inventory", "", ClassRead},
 		{"iso_inventory is Read", "iso_inventory", "", ClassRead},
+		{"host_settings is Read", "host_settings", "", ClassRead},
 		{"agent_status is Read", "agent_status", "", ClassRead},
 
 		// host_management Read variants
