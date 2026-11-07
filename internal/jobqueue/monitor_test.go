@@ -332,7 +332,7 @@ func TestMonitor_CheckTimeouts_KillsExpiredWorker(t *testing.T) {
 		Process:   cmd.Process,
 		Cmd:       cmd,
 		StartedAt: time.Now().Add(-2 * time.Second), // started 2s ago, timeout is 1ms
-		TaskType:  "vm_create",
+		TaskType:  "vm_start", // no per-type override, so the 1ms default applies
 		Class:     ClassWrite,
 	}
 
